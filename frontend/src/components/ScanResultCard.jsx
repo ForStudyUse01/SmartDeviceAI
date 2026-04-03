@@ -9,7 +9,50 @@ export function ScanResultCard({ scan }) {
     )
   }
 
+  if (scan.validation && scan.validation.status !== 'approved') {
+    const validation = scan.validation
+    const di = scan.deviceInfo
+
+    return (
+      <div className="scan-result-sections">
+        <div className="scan-section">
+          <h3 className="scan-section-title">Verification required</h3>
+          <div className="scan-section-body">
+            <div className="error-banner" style={{ marginBottom: 12 }}>
+              {validation.message}
+            </div>
+            <ul className="device-info-list">
+              <li>
+                <span className="result-key">Manual type</span> {di?.deviceType || '-'}
+              </li>
+              <li>
+                <span className="result-key">Manual condition</span> {di?.conditionLabel || '-'}
+              </li>
+              <li>
+                <span className="result-key">AI detected device</span> {validation.aiDetectedDevice}
+              </li>
+              <li>
+                <span className="result-key">AI condition</span> {validation.aiCondition}
+              </li>
+              <li>
+                <span className="result-key">Match score</span> {validation.matchScore}%
+              </li>
+              <li>
+                <span className="result-key">AI confidence</span> {validation.aiConfidence}%
+              </li>
+            </ul>
+            <p className="metric-hint" style={{ marginTop: 12 }}>
+              {validation.aiSuggestion ||
+                'Attach a clearer image that properly shows the device so the AI can justify the final estimate.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const s = enrichScan(scan)
+  const validation = s.validation
 
   const showProfit = (s.profit ?? 0) > 0
   const showLoss = (s.loss ?? 0) > 0
@@ -54,6 +97,36 @@ export function ScanResultCard({ scan }) {
           )}
         </div>
       </div>
+
+      {validation ? (
+        <div className="scan-section">
+          <h3 className="scan-section-title">AI verification</h3>
+          <div className="scan-section-body">
+            <ul className="device-info-list">
+              <li>
+                <span className="result-key">Status</span> {validation.message}
+              </li>
+              <li>
+                <span className="result-key">Match score</span> {validation.matchScore}%
+              </li>
+              <li>
+                <span className="result-key">AI detected device</span> {validation.aiDetectedDevice}
+              </li>
+              <li>
+                <span className="result-key">AI condition</span> {validation.aiCondition}
+              </li>
+              <li>
+                <span className="result-key">AI confidence</span> {validation.aiConfidence}%
+              </li>
+            </ul>
+            {validation.aiSuggestion ? (
+              <p className="metric-hint" style={{ marginTop: 12 }}>
+                AI condition analysis: {validation.aiSuggestion}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="scan-section">
         <h3 className="scan-section-title">Estimated value</h3>

@@ -11,3 +11,7 @@ backend/app/routes/__pycache__/
 backend/app/schemas/__pycache__/
 backend/.env
 *.pyc
+*.log
+*.zip
+*.pem
+results.txt

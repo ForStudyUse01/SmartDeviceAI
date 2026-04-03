@@ -1,11 +1,55 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ScanResultCard } from '../components/ScanResultCard'
+import { useAuth } from '../context/AuthContext'
 import { parseCsv } from '../lib/csv'
 import { brandsForType, deviceTypes, findDeviceRow, modelsForBrand } from '../lib/datasetUtils'
 import { saveDeviceEntry } from '../lib/deviceHistory'
+import { analyzeDeviceImages } from '../lib/api'
 import { computeManualValuation } from '../lib/valuation'
-import { useAuth } from '../context/AuthContext'
-import { uploadScan } from '../lib/api'
+
+const AI_DEVICE_MAP = {
+  phone: 'Phone',
+  laptop: 'Laptop',
+  tablet: 'Tablet',
+  charger: 'Charger',
+  powerbank: 'Powerbank',
+  pcb: 'PCB',
+}
+
+const AI_CONDITION_MAP = {
+  Excellent: 'Good',
+  Good: 'Good',
+  Fair: 'Average',
+  Poor: 'Poor',
+}
+
+function normalizeValue(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+}
+
+function buildValidationResult({
+  status,
+  message,
+  aiResult = null,
+  matchScore = 0,
+  manualSnapshot,
+}) {
+  return {
+    validation: {
+      status,
+      message,
+      matchScore,
+      aiDetectedDevice: aiResult?.detected_device || 'Not detected',
+      aiCondition: aiResult?.ai_condition || 'Not analyzed',
+      aiSuggestion: aiResult?.suggestion || '',
+      aiConfidence: Math.round(aiResult?.confidence || 0),
+      requiresImage: status === 'missing-image',
+    },
+    deviceInfo: manualSnapshot,
+  }
+}
 
 export function ScanPage() {
   const { token } = useAuth()
@@ -23,35 +67,38 @@ export function ScanPage() {
   const [waterDamage, setWaterDamage] = useState('No')
 
   const [result, setResult] = useState(null)
-
-  const [selectedFile, setSelectedFile] = useState(null)
+  const [selectedFiles, setSelectedFiles] = useState([])
   const [imageLoading, setImageLoading] = useState(false)
   const [imageError, setImageError] = useState('')
-  const [imageResult, setImageResult] = useState(null)
 
   useEffect(() => {
     let cancelled = false
+
     async function load() {
       try {
         const res = await fetch(`${import.meta.env.BASE_URL}datasets/devices.csv`)
         if (!res.ok) throw new Error('Could not load devices.csv')
         const text = await res.text()
         const rows = parseCsv(text)
+
         if (cancelled) return
+
         setDataset(rows)
         const types = deviceTypes(rows)
         if (types[0]) {
           setDeviceType(types[0])
-          const b0 = brandsForType(rows, types[0])[0]
-          setBrand(b0 || '')
-          const m0 = modelsForBrand(rows, types[0], b0)[0]
-          setModel(m0 || '')
+          const firstBrand = brandsForType(rows, types[0])[0]
+          setBrand(firstBrand || '')
+          const firstModel = modelsForBrand(rows, types[0], firstBrand || '')[0]
+          setModel(firstModel || '')
         }
-      } catch (e) {
-        if (!cancelled) setLoadError(e.message || 'Failed to load dataset')
+      } catch (error) {
+        if (!cancelled) setLoadError(error.message || 'Failed to load dataset')
       }
     }
+
     load()
+
     return () => {
       cancelled = true
     }
@@ -67,16 +114,14 @@ export function ScanPage() {
   useEffect(() => {
     if (!deviceType || !brands.length) return
     if (!brands.includes(brand)) {
-      const b = brands[0]
-      if (b) setBrand(b)
+      setBrand(brands[0] || '')
     }
   }, [deviceType, brands, brand])
 
   useEffect(() => {
     if (!deviceType || !brand || !models.length) return
     if (!models.includes(model)) {
-      const m = models[0]
-      if (m) setModel(m)
+      setModel(models[0] || '')
     }
   }, [deviceType, brand, models, model])
 
@@ -96,27 +141,125 @@ export function ScanPage() {
     [ageYears, conditionLabel, screenDamage, bodyDamage, waterDamage],
   )
 
-  function handleSubmit(event) {
-    event.preventDefault()
-    if (!selectedRow) return
-    const computed = computeManualValuation(selectedRow, form)
-    setResult(computed)
-    saveDeviceEntry(computed)
+  function resolveAiDeviceType(aiDevice) {
+    const mapped = AI_DEVICE_MAP[String(aiDevice || '').trim().toLowerCase()]
+    if (!mapped) return ''
+    return types.find((entry) => entry.toLowerCase() === mapped.toLowerCase()) || ''
   }
 
-  async function handleImageScan(event) {
+  function calculateMatchScore(aiResult) {
+    const normalizedManualType = normalizeValue(deviceType)
+    const normalizedAiType = normalizeValue(resolveAiDeviceType(aiResult.detected_device) || aiResult.detected_device)
+    const normalizedManualCondition = normalizeValue(conditionLabel)
+    const normalizedAiCondition = normalizeValue(AI_CONDITION_MAP[aiResult.ai_condition] || aiResult.ai_condition)
+    const aiConfidence = Number(aiResult.confidence) || 0
+
+    let score = 0
+
+    if (normalizedAiType && normalizedAiType === normalizedManualType) {
+      score += 50
+    } else if (
+      (!normalizedAiType || normalizedAiType === 'unknown') &&
+      aiConfidence >= 60
+    ) {
+      // If the image analysis is reasonably confident but cannot name the device,
+      // give partial credit instead of blocking otherwise-valid photos.
+      score += 40
+    }
+
+    if (normalizedAiCondition && normalizedAiCondition === normalizedManualCondition) {
+      score += 30
+    } else if (
+      (normalizedManualCondition === 'good' && normalizedAiCondition === 'average') ||
+      (normalizedManualCondition === 'average' && normalizedAiCondition === 'good')
+    ) {
+      score += 20
+    }
+
+    score += Math.min(20, Math.round(aiConfidence / 5))
+
+    return Math.min(100, score)
+  }
+
+  async function handleSubmit(event) {
     event.preventDefault()
-    if (!selectedFile || !token) {
-      setImageError(!token ? 'Sign in required for image scan.' : 'Choose an image first.')
+    if (!selectedRow) return
+
+    const manualSnapshot = {
+      deviceType,
+      brand,
+      model,
+      ageYears,
+      conditionLabel,
+      screenDamage,
+      bodyDamage,
+      waterDamage,
+    }
+
+    if (!token) {
+      setImageError('Sign in required before calculating an AI-verified estimate.')
       return
     }
+
+    if (selectedFiles.length === 0) {
+      setImageError('')
+      setResult(
+        buildValidationResult({
+          status: 'missing-image',
+          message:
+            'Please attach at least one image for proper justification. The estimate is blocked until the AI scan can verify the device and condition.',
+          manualSnapshot,
+        }),
+      )
+      return
+    }
+
+    if (selectedFiles.length > 4) {
+      setImageError('Upload between 1 and 4 images for AI analysis.')
+      return
+    }
+
     setImageLoading(true)
     setImageError('')
+
     try {
-      const res = await uploadScan(token, selectedFile)
-      setImageResult(res)
-    } catch (e) {
-      setImageError(e.message || 'Scan failed')
+      const aiResult = await analyzeDeviceImages({
+        deviceType,
+        model,
+        condition: conditionLabel,
+        age: ageYears,
+        images: selectedFiles,
+      })
+      const matchScore = calculateMatchScore(aiResult)
+
+      if (matchScore < 70) {
+        setResult(
+          buildValidationResult({
+            status: 'mismatch',
+            message:
+              'Manual input and AI scan do not match strongly enough. Please insert an appropriate image or correct the manual details, then calculate again.',
+            aiResult,
+            matchScore,
+            manualSnapshot,
+          }),
+        )
+        return
+      }
+
+      const computed = computeManualValuation(selectedRow, form)
+      computed.validation = {
+        status: 'approved',
+        message: 'AI verification passed. The image and manual input are aligned well enough to show the estimate.',
+        matchScore,
+        aiDetectedDevice: aiResult.detected_device,
+        aiCondition: aiResult.ai_condition,
+        aiSuggestion: aiResult.suggestion || '',
+        aiConfidence: Math.round(aiResult.confidence || 0),
+      }
+      setResult(computed)
+      saveDeviceEntry(computed)
+    } catch (error) {
+      setImageError(error.message || 'AI analysis failed')
     } finally {
       setImageLoading(false)
     }
@@ -126,71 +269,108 @@ export function ScanPage() {
     <div className="dashboard-layout">
       <section className="page-hero-saas">
         <span className="eyebrow eyebrow-indigo">Core system</span>
-        <h1 className="dashboard-title">Scan device</h1>
+        <h1 className="dashboard-title">SmartDeviceAI Dashboard</h1>
         <p className="dashboard-subtitle">
-          Linked device selection, condition &amp; damage inputs, static metal recovery pricing, and intelligent
-          recommendations.
+          Blend AI-assisted verification with manual lifecycle inputs to produce a clean, reviewable device estimate.
         </p>
       </section>
 
       <section className="content-grid">
         <div className="glass-panel panel-hover saas-card">
-          <h2 className="panel-title">A. Device input</h2>
-          <p className="panel-subtitle">Cascade: device type → brand → model. All fields drive the estimate.</p>
+          <h2 className="panel-title">A. Manual input</h2>
+          <p className="panel-subtitle">
+            Add manual device details and attach 1 to 4 images. The final estimate appears only after the AI scan and
+            manual input match at 70% or higher.
+          </p>
           {loadError ? <div className="error-banner">{loadError}</div> : null}
+
           <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="manual-ai-panel">
+              <div className="manual-ai-copy">
+                <span className="manual-ai-label">AI image scan</span>
+                <p className="panel-subtitle">
+                  Use 1 to 4 device images. The AI check runs automatically when you click Calculate estimate.
+                </p>
+              </div>
+
+              <div className="upload-dropzone manual-upload-dropzone">
+                <input
+                  type="file"
+                  multiple
+                  accept="image/png,image/jpeg,image/jpg"
+                  onChange={(event) => {
+                    setSelectedFiles(Array.from(event.target.files || []))
+                    setImageError('')
+                  }}
+                />
+                <span className="upload-meta">
+                  {selectedFiles.length
+                    ? `${selectedFiles.length} image${selectedFiles.length > 1 ? 's' : ''} selected`
+                    : 'PNG or JPG, multiple upload enabled'}
+                </span>
+              </div>
+
+            </div>
+
+            {imageError ? <div className="error-banner">{imageError}</div> : null}
+
             <div className="field">
               <label htmlFor="dev-type">Device type</label>
               <select
                 id="dev-type"
                 value={deviceType}
-                onChange={(e) => {
-                  const t = e.target.value
-                  setDeviceType(t)
-                  const bs = brandsForType(dataset, t)
-                  setBrand(bs[0] || '')
-                  const ms = modelsForBrand(dataset, t, bs[0] || '')
-                  setModel(ms[0] || '')
+                onChange={(event) => {
+                  const nextType = event.target.value
+                  const nextBrands = brandsForType(dataset, nextType)
+                  const nextBrand = nextBrands[0] || ''
+                  const nextModels = modelsForBrand(dataset, nextType, nextBrand)
+                  const nextModel = nextModels[0] || ''
+
+                  setDeviceType(nextType)
+                  setBrand(nextBrand)
+                  setModel(nextModel)
                 }}
               >
-                {types.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
+                {types.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {entry}
                   </option>
                 ))}
               </select>
             </div>
+
             <div className="field">
               <label htmlFor="dev-brand">Brand</label>
               <select
                 id="dev-brand"
                 value={brands.includes(brand) ? brand : ''}
-                onChange={(e) => {
-                  const b = e.target.value
-                  setBrand(b)
-                  const ms = modelsForBrand(dataset, deviceType, b)
-                  setModel(ms[0] || '')
+                onChange={(event) => {
+                  const nextBrand = event.target.value
+                  const nextModels = modelsForBrand(dataset, deviceType, nextBrand)
+                  setBrand(nextBrand)
+                  setModel(nextModels[0] || '')
                 }}
                 disabled={!brands.length}
               >
-                {brands.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
+                {brands.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {entry}
                   </option>
                 ))}
               </select>
             </div>
+
             <div className="field">
               <label htmlFor="dev-model">Model</label>
               <select
                 id="dev-model"
                 value={models.includes(model) ? model : ''}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={(event) => setModel(event.target.value)}
                 disabled={!models.length}
               >
-                {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                {models.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {entry}
                   </option>
                 ))}
               </select>
@@ -204,73 +384,52 @@ export function ScanPage() {
                 min={1}
                 max={15}
                 value={ageYears}
-                onChange={(e) => setAgeYears(Number(e.target.value) || 1)}
+                onChange={(event) => setAgeYears(Number(event.target.value) || 1)}
               />
             </div>
+
             <div className="field">
               <label htmlFor="cond-l">Condition</label>
-              <select id="cond-l" value={conditionLabel} onChange={(e) => setConditionLabel(e.target.value)}>
+              <select id="cond-l" value={conditionLabel} onChange={(event) => setConditionLabel(event.target.value)}>
                 <option>Good</option>
                 <option>Average</option>
                 <option>Poor</option>
               </select>
             </div>
+
             <div className="field">
               <label htmlFor="scr-d">Screen damage</label>
-              <select id="scr-d" value={screenDamage} onChange={(e) => setScreenDamage(e.target.value)}>
+              <select id="scr-d" value={screenDamage} onChange={(event) => setScreenDamage(event.target.value)}>
                 <option>No</option>
                 <option>Yes</option>
               </select>
             </div>
+
             <div className="field">
               <label htmlFor="bod-d">Body damage</label>
-              <select id="bod-d" value={bodyDamage} onChange={(e) => setBodyDamage(e.target.value)}>
+              <select id="bod-d" value={bodyDamage} onChange={(event) => setBodyDamage(event.target.value)}>
                 <option>No</option>
                 <option>Yes</option>
               </select>
             </div>
+
             <div className="field">
               <label htmlFor="water-d">Water damage</label>
-              <select id="water-d" value={waterDamage} onChange={(e) => setWaterDamage(e.target.value)}>
+              <select id="water-d" value={waterDamage} onChange={(event) => setWaterDamage(event.target.value)}>
                 <option>No</option>
                 <option>Yes</option>
               </select>
             </div>
 
             <button type="submit" className="primary-button" disabled={!selectedRow}>
-              Calculate estimate
+              {imageLoading ? 'Analyzing image and calculating...' : 'Calculate estimate'}
             </button>
           </form>
-
-          <div className="scan-image-section">
-            <h3 className="panel-title" style={{ fontSize: '1.05rem', marginTop: 24 }}>
-              Optional: AI image scan
-            </h3>
-            <p className="panel-subtitle">Upload a device photo — uses existing backend classifier (requires login).</p>
-            <form className="upload-form" onSubmit={handleImageScan}>
-              <div className="upload-dropzone">
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg"
-                  onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-                />
-              </div>
-              {imageError ? <div className="error-banner">{imageError}</div> : null}
-              <button className="secondary-button" type="submit" disabled={imageLoading}>
-                {imageLoading ? 'Scanning…' : 'Run image scan'}
-              </button>
-            </form>
-            {imageResult ? (
-              <div style={{ marginTop: 16 }}>
-                <ScanResultCard scan={imageResult} />
-              </div>
-            ) : null}
-          </div>
         </div>
 
         <div className="glass-panel panel-hover saas-card">
           <h2 className="panel-title">B. Result</h2>
-          <p className="panel-subtitle">Estimated value, metal composition value, P/L, recommended action.</p>
+          <p className="panel-subtitle">Estimated value, metal composition value, profit/loss, and recommended action.</p>
           <ScanResultCard scan={result} />
         </div>
       </section>

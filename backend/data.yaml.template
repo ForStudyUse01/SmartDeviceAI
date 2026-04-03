@@ -1,0 +1,46 @@
+# E-waste Detection YOLO Dataset Configuration
+#
+# This is the required data.yaml for training YOLO on e-waste objects
+#
+# Directory structure required:
+# dataset/
+#  ├── images/
+#  │   ├── train/     (training images)
+#  │   ├── val/       (validation images)
+#  │   └── test/      (optional test images)
+#  ├── labels/
+#  │   ├── train/     (YOLO format annotations)
+#  │   └── val/       (YOLO format annotations)
+#  └── data.yaml      (this file)
+#
+# YOLO annotation format (.txt files):
+# <class_id> <x_center> <y_center> <width> <height> (normalized 0-1)
+#
+# Reference: https://docs.ultralytics.com/datasets/detect/
+
+# Path to dataset root directory (relative or absolute)
+path: /path/to/dataset
+
+# Train and validation image directories (relative to path)
+train: images/train
+val: images/val
+test: images/test  # Optional
+
+# Number of classes
+nc: 6
+
+# Class names (order matters - index matches annotation labels)
+names:
+  0: battery
+  1: pcb
+  2: wire
+  3: charger
+  4: laptop
+  5: mobile
+
+# Optional: roboflow download
+# roboflow:
+#   api_key: your_api_key
+#   project: e-waste-detection
+#   version: 1
+#   workspace: your-workspace

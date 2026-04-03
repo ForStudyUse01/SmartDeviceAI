@@ -61,9 +61,22 @@ function IconSettings() {
   )
 }
 
+function IconHybrid() {
+  return (
+    <svg className="sidebar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M21 9v6h-2V9h2zM3 15V9h2v6H3zm12-9c1.66 0 3 1.34 3 3v6c0 1.66-1.34 3-3 3H9c-1.66 0-3-1.34-3-3V9c0-1.66 1.34-3 3-3h6zm-2 2h-2v2H9v2h2v2h2v-2h2v-2h-2v-2z"
+        fill="currentColor"
+        opacity="0.9"
+      />
+    </svg>
+  )
+}
+
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', Icon: IconDashboard },
   { to: '/scan', label: 'Scan Device', Icon: IconScan },
+  { to: '/hybrid', label: 'Hybrid AI', Icon: IconHybrid },
   { to: '/devices', label: 'My Devices', Icon: IconDevices },
   { to: '/repair', label: 'Repair Master', Icon: IconRepair },
   { to: '/settings', label: 'Settings', Icon: IconSettings },

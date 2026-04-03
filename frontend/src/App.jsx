@@ -4,6 +4,7 @@ import { WorkspaceShell } from './components/WorkspaceShell'
 import { AuthProvider } from './context/AuthContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { DevicesPage } from './pages/DevicesPage'
+import { HybridAIPage } from './pages/HybridAIPage'
 import { LoginPage } from './pages/LoginPage'
 import { RepairMasterPage } from './pages/RepairMasterPage'
 import { ScanPage } from './pages/ScanPage'
@@ -33,6 +34,7 @@ function App() {
           <Route path="/devices" element={<DevicesPage />} />
           <Route path="/devices/:id" element={<DevicesPage />} />
           <Route path="/repair" element={<RepairMasterPage />} />
+          <Route path="/hybrid" element={<HybridAIPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
         <Route path="/manual-input" element={<Navigate to="/scan" replace />} />
