@@ -13,8 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.routes.ai_inference import router as ai_inference_router
 from pipeline import E_WasteDetectionPipeline, DetectedObject, BatchResult, PipelineResult
 from yolo_model import TrainingConfig
+from services.ai_service import get_ai_service
 
 # Logging setup
 logging.basicConfig(
@@ -24,6 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "20"))
 FAST_AI_MODE = os.getenv("FAST_AI_MODE", "1").lower() in {"1", "true", "yes", "on"}
+CORS_ORIGINS_RAW = os.getenv(
+    "CORS_ORIGINS",
+    "http://127.0.0.1:5173,http://localhost:5173,http://192.168.1.10:5173",
+)
+
+
+def parse_cors_origins(origins_raw: str) -> list[str]:
+    origins = [origin.strip() for origin in origins_raw.split(",") if origin.strip()]
+    return origins or ["http://127.0.0.1:5173", "http://localhost:5173"]
 
 # FastAPI app
 app = FastAPI(
@@ -35,11 +46,12 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=parse_cors_origins(CORS_ORIGINS_RAW),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(ai_inference_router)
 
 pipeline: E_WasteDetectionPipeline | None = None
 
@@ -65,17 +77,28 @@ def build_timeout_fallback(
     quick_label = quick_detection.detected_device if quick_detection.detected_device != "unknown" else "electronic device"
     quick_analysis = active_pipeline.vlm_analyzer._fallback_analysis(image_bytes)
 
+    rec_result = active_pipeline.recommendation_engine.evaluate(
+        device_type=quick_analysis.object_name,
+        eco_score=quick_analysis.eco_score,
+        damage_indicators=[],
+        raw_working_status=quick_analysis.condition
+    )
+    combined_condition = f"{rec_result.condition_category} & {rec_result.working_status}"
+
     fallback_object = DetectedObject(
         yolo_label=quick_label,
         yolo_confidence=quick_detection.confidence,
         vlm_object=quick_analysis.object_name,
-        condition=quick_analysis.condition,
+        condition=combined_condition,
+        details=rec_result.details,
         suggestion=(
-            f"{quick_analysis.suggestion} "
+            f"{rec_result.recommendation} "
             "Full AI pipeline timed out, so this result uses the fast fallback analyzer."
         ).strip(),
         eco_score=quick_analysis.eco_score,
         box=(0, 0, 1, 1),
+        vlm_condition=quick_analysis.condition_label,
+        vlm_damage=quick_analysis.damage,
     )
 
     return PipelineResult(
@@ -96,6 +119,14 @@ def build_fast_analysis(
     quick_label = quick_detection.detected_device if quick_detection.detected_device != "unknown" else "electronic device"
     quick_analysis = active_pipeline.vlm_analyzer._fallback_analysis(image_bytes)
 
+    rec_result = active_pipeline.recommendation_engine.evaluate(
+        device_type=quick_analysis.object_name,
+        eco_score=quick_analysis.eco_score,
+        damage_indicators=[],
+        raw_working_status=quick_analysis.condition
+    )
+    combined_condition = f"{rec_result.condition_category} & {rec_result.working_status}"
+
     return PipelineResult(
         status="success",
         image_name=image_name,
@@ -104,10 +135,13 @@ def build_fast_analysis(
                 yolo_label=quick_label,
                 yolo_confidence=quick_detection.confidence,
                 vlm_object=quick_analysis.object_name,
-                condition=quick_analysis.condition,
-                suggestion=quick_analysis.suggestion,
+                condition=combined_condition,
+                details=rec_result.details,
+                suggestion=rec_result.recommendation,
                 eco_score=quick_analysis.eco_score,
                 box=(0, 0, 1, 1),
+                vlm_condition=quick_analysis.condition_label,
+                vlm_damage=quick_analysis.damage,
             )
         ],
         error_message="Fast AI mode used for responsive analysis.",
@@ -124,6 +158,9 @@ class ObjectDetectionResponse(BaseModel):
     yolo_confidence: float = Field(..., description="YOLO confidence (0-100)")
     vlm_object: str = Field(..., description="VLM identified object")
     condition: str = Field(..., description="Object condition")
+    vlm_condition: str = Field("Average", description="Structured VLM condition: Good/Average/Poor")
+    vlm_damage: str = Field("Not Broken", description="Structured VLM damage: Broken/Not Broken")
+    details: str = Field(..., description="Details about conditions")
     suggestion: str = Field(..., description="Recycling/repair suggestion")
     eco_score: int = Field(..., description="Recyclability score (0-100)")
     box: tuple = Field(..., description="Bounding box [x1, y1, x2, y2]")
@@ -181,6 +218,20 @@ async def health_check():
     }
 
 
+@app.get("/health/full")
+async def full_health_check():
+    """Extended health check for full-stack orchestration."""
+    ai = get_ai_service()
+    return {
+        "status": "ok",
+        "backend": "ready",
+        "yolo_model_path": str(ai.yolo_model_path),
+        "vlm_model_name": ai.blip_model_name,
+        "device": ai.device_str,
+        "cuda_available": ai.cuda_available,
+    }
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -194,6 +245,7 @@ async def root():
 # ============================================================================
 # Analysis Endpoints
 # ============================================================================
+
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_single_image(

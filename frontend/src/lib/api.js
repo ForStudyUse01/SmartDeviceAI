@@ -1,8 +1,29 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
-const AI_ANALYZE_URL = import.meta.env.VITE_AI_ANALYZE_URL || 'http://127.0.0.1:5000'
-const AI_REQUEST_TIMEOUT_MS = 25000
+const PROD_API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+const PROD_AI_ANALYZE_URL = import.meta.env.VITE_AI_ANALYZE_URL || 'http://127.0.0.1:5000'
+const API_URL = import.meta.env.DEV ? '/api' : PROD_API_URL
+const AI_ANALYZE_URL = import.meta.env.DEV ? '/ai' : PROD_AI_ANALYZE_URL
+const REQUEST_TIMEOUT_MS = 25000
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+function validateUrlConfiguration() {
+  if (!import.meta.env.DEV) {
+    const isValid = (value) => /^https?:\/\//.test(value)
+    if (!isValid(API_URL)) {
+      throw new Error(`Invalid VITE_API_URL: "${API_URL}". Expected absolute http(s) URL.`)
+    }
+    if (!isValid(AI_ANALYZE_URL)) {
+      throw new Error(`Invalid VITE_AI_ANALYZE_URL: "${AI_ANALYZE_URL}". Expected absolute http(s) URL.`)
+    }
+  }
+}
+
+validateUrlConfiguration()
+
+function buildNetworkError(serviceName, baseUrl, originalError) {
+  const details = originalError?.message ? ` (${originalError.message})` : ''
+  return new Error(`Cannot reach ${serviceName} backend at ${baseUrl}${details}`)
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS, serviceName = 'backend') {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -13,9 +34,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = AI_REQUEST_TIMEOU
     })
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw new Error('AI analysis timed out. Please try again with a clearer image or a lower confidence threshold.')
+      throw new Error(`${serviceName} request timed out. Check server status and retry.`)
     }
-    throw error
+    throw buildNetworkError(serviceName, url, error)
   } finally {
     clearTimeout(timeoutId)
   }
@@ -46,7 +67,7 @@ function toLegacyAiResponse(data) {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_URL}${path}`, options)
+  const response = await fetchWithTimeout(`${API_URL}${path}`, options, REQUEST_TIMEOUT_MS, 'dashboard API')
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
@@ -95,6 +116,73 @@ export function uploadScan(token, file) {
   })
 }
 
+export async function aiDeviceScan(token, payload) {
+  if (!payload?.images?.length) {
+    throw new Error('At least one image is required')
+  }
+  const formData = new FormData()
+  payload.images.forEach((image) => formData.append('images', image))
+  formData.append('device_type', payload.device_type)
+  formData.append('brand', payload.brand)
+  formData.append('model', payload.model)
+  formData.append('age', String(payload.age))
+  formData.append('condition', payload.condition)
+  formData.append('screen_damage', String(Boolean(payload.screen_damage)))
+  formData.append('body_damage', String(Boolean(payload.body_damage)))
+  formData.append('water_damage', String(Boolean(payload.water_damage)))
+
+  const response = await fetchWithTimeout(
+    `${API_URL}/ai-device-scan`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    },
+    REQUEST_TIMEOUT_MS,
+    'dashboard API'
+  )
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || 'AI device scan failed')
+  }
+  return data
+}
+
+export async function chatAssistant(token, message) {
+  const response = await fetchWithTimeout(
+    `${API_URL}/chat`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message }),
+    },
+    REQUEST_TIMEOUT_MS,
+    'dashboard API'
+  )
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || 'Assistant request failed')
+  }
+  return data
+}
+
+export async function ensureDashboardApiReady() {
+  const response = await fetchWithTimeout(`${API_URL}/health`, {}, 10000, 'dashboard API')
+  if (!response.ok) {
+    throw new Error(`Dashboard API health check failed with status ${response.status}`)
+  }
+}
+
+export async function ensureAiApiReady() {
+  const response = await fetchWithTimeout(`${AI_ANALYZE_URL}/health/full`, {}, 20000, 'AI API')
+  if (!response.ok) {
+    throw new Error(`AI API health check failed with status ${response.status}`)
+  }
+}
+
 /**
  * Analyze a single image using YOLO + VLM pipeline
  * @param {File} file - Image file
@@ -104,22 +192,56 @@ export function uploadScan(token, file) {
 export async function analyzeHybridImage(file, confThreshold = 0.25) {
   const formData = new FormData()
   formData.append('file', file)
+  await ensureAiApiReady()
 
-  const response = await fetchWithTimeout(
-    `${AI_ANALYZE_URL}/analyze?conf_threshold=${confThreshold}`,
+  // New full-stack path: /explain combines YOLO detection + VLM explanation.
+  const explainResponse = await fetchWithTimeout(
+    `${AI_ANALYZE_URL}/explain?conf_threshold=${confThreshold}`,
     {
       method: 'POST',
       body: formData,
-    }
+    },
+    REQUEST_TIMEOUT_MS,
+    'AI API'
   )
+  const explainData = await explainResponse.json().catch(() => ({}))
 
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(data.detail || 'Hybrid AI analysis failed')
+  if (!explainResponse.ok) {
+    // Backward-compatible fallback for legacy backend deployments.
+    const fallbackResponse = await fetchWithTimeout(
+      `${AI_ANALYZE_URL}/analyze?conf_threshold=${confThreshold}`,
+      {
+        method: 'POST',
+        body: formData,
+      },
+      REQUEST_TIMEOUT_MS,
+      'AI API'
+    )
+    const fallbackData = await fallbackResponse.json().catch(() => ({}))
+    if (!fallbackResponse.ok) {
+      throw new Error(fallbackData.detail || explainData.detail || 'Hybrid AI analysis failed')
+    }
+    return fallbackData
   }
 
-  return data
+  const mappedObjects = (explainData.detections || []).map((det) => ({
+    yolo_label: det.label,
+    yolo_confidence: (det.confidence || 0) * 100,
+    vlm_object: det.label,
+    condition: 'AI analyzed',
+    details: explainData.caption || 'No caption generated.',
+    suggestion: explainData.description || 'No recommendation generated.',
+    eco_score: 70,
+    box: det.box || [0, 0, 0, 0],
+  }))
+
+  return {
+    status: explainData.status || 'success',
+    image_name: explainData.image_name || file.name,
+    detected_objects: mappedObjects,
+    num_detections: mappedObjects.length,
+    error_message: null,
+  }
 }
 
 /**
@@ -130,6 +252,7 @@ export async function analyzeHybridImage(file, confThreshold = 0.25) {
  */
 export async function analyzeBatchImages(files, confThreshold = 0.25) {
   const formData = new FormData()
+  await ensureAiApiReady()
 
   for (const file of files) {
     formData.append('files', file)
@@ -140,7 +263,9 @@ export async function analyzeBatchImages(files, confThreshold = 0.25) {
     {
       method: 'POST',
       body: formData,
-    }
+    },
+    REQUEST_TIMEOUT_MS,
+    'AI API'
   )
 
   const data = await response.json().catch(() => ({}))
@@ -157,7 +282,7 @@ export async function analyzeBatchImages(files, confThreshold = 0.25) {
  * @returns {Promise} Health status
  */
 export async function getApiHealth() {
-  const response = await fetch(`${AI_ANALYZE_URL}/health`)
+  const response = await fetchWithTimeout(`${AI_ANALYZE_URL}/health`, {}, 10000, 'AI API')
   const data = await response.json().catch(() => ({}))
   return data
 }
@@ -219,6 +344,7 @@ export async function analyzeDeviceImages(payload) {
   }
 
   try {
+    await ensureAiApiReady()
     if (payload.images.length === 1) {
       const single = await analyzeHybridImage(payload.images[0])
       return toLegacyAiResponse(single)
@@ -233,8 +359,8 @@ export async function analyzeDeviceImages(payload) {
 
     return toLegacyAiResponse(firstSuccess)
   } catch (error) {
-    if (error?.message?.includes('Failed to fetch')) {
-      throw new Error('AI service is unavailable. Make sure the analysis backend is running on port 5000.')
+    if (error?.message?.includes('Cannot reach AI API')) {
+      throw new Error('AI service is unavailable. Start backend/app.py on port 5000 or check /ai proxy config.')
     }
     throw error
   }

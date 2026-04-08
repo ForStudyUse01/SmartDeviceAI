@@ -15,6 +15,7 @@ from PIL import Image
 from device_detector import SmartDeviceDetector
 from vlm_model import VLMAnalyzer
 from yolo_model import BoundingBox, YoloDetector
+from recommendation_engine import RecommendationEngine
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +26,12 @@ class DetectedObject:
     yolo_confidence: float
     vlm_object: str
     condition: str
+    details: str
     suggestion: str
     eco_score: int
     box: tuple[int, int, int, int]
+    vlm_condition: str = "Average"
+    vlm_damage: str = "Not Broken"
 
 
 @dataclass
@@ -65,6 +69,7 @@ class E_WasteDetectionPipeline:
         self.yolo_detector = YoloDetector(yolo_model_path)
         self.vlm_analyzer = VLMAnalyzer(vlm_model_name)
         self.device_detector = SmartDeviceDetector()
+        self.recommendation_engine = RecommendationEngine()
         logger.info("Pipeline initialized successfully")
 
     def _build_fallback_box(self, image: Image.Image, image_bytes: bytes, image_name: str) -> list[BoundingBox]:
@@ -109,6 +114,19 @@ class E_WasteDetectionPipeline:
 
         return []
 
+    def _filter_condition(self, analysis, yolo_confidence: float) -> tuple[str, float]:
+        if yolo_confidence < 40:
+            return "ignore", 0.0
+
+        indicators = getattr(analysis, "damage_indicators", [])
+        if analysis.condition == "damaged" and len(indicators) < 2:
+            return "working", max(analysis.confidence, 0.6)
+
+        if len(indicators) >= 2:
+            return "damaged", max(analysis.confidence, 0.75)
+
+        return "working", max(analysis.confidence, 0.6)
+
     def process_single_image(
         self,
         image_bytes: bytes,
@@ -145,13 +163,34 @@ class E_WasteDetectionPipeline:
                     crop_bytes = crop_io.getvalue()
 
                     analysis = self.vlm_analyzer.analyze_crop(crop_bytes, "image/jpeg")
+                    filtered_condition, filtered_confidence = self._filter_condition(
+                        analysis,
+                        box.confidence,
+                    )
+
+                    if filtered_condition == "ignore":
+                        continue
+
+                    # Recommendation Engine logic
+                    rec_result = self.recommendation_engine.evaluate(
+                        device_type=analysis.object_name,
+                        eco_score=analysis.eco_score,
+                        damage_indicators=analysis.damage_indicators,
+                        raw_working_status=filtered_condition
+                    )
+                    
+                    combined_condition = f"{rec_result.condition_category} & {rec_result.working_status}"
+
                     detected_objects.append(
                         DetectedObject(
                             yolo_label=box.label,
-                            yolo_confidence=box.confidence,
+                            yolo_confidence=round(filtered_confidence * 100, 2),
                             vlm_object=analysis.object_name,
-                            condition=analysis.condition,
-                            suggestion=analysis.suggestion,
+                            condition=combined_condition,
+                            vlm_condition=analysis.condition_label,
+                            vlm_damage=analysis.damage,
+                            details=rec_result.details,
+                            suggestion=rec_result.recommendation,
                             eco_score=analysis.eco_score,
                             box=(x1, y1, x2, y2),
                         )

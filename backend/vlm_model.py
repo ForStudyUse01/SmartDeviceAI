@@ -20,39 +20,24 @@ from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
 logger = logging.getLogger(__name__)
 
-# E-waste specific prompt - Enhanced for better accuracy
-E_WASTE_PROMPT = """You are an expert in electronic waste (e-waste) assessment. Analyze this device/component image carefully.
+# Strict prompt for structured condition + damage outputs.
+E_WASTE_PROMPT = """Analyze the uploaded device image.
+Classify:
+1. Overall condition: Good, Average, or Poor
+2. Is the device broken? Answer: Broken or Not Broken
 
-IDENTIFY:
-1. **Device Type**: Identify the exact device (e.g., iPhone 13, Samsung Galaxy, laptop, PCB board, battery, charger, etc.)
-2. **Condition Assessment**: Look for physical signs:
-   - Working: No visible damage, screen intact, no cracks, clean
-   - Partially working: Minor scratches, small dents, might have functional issues
-   - Damaged: Cracked screen, broken parts, water damage, major cracks
-   - Scrap: Beyond repair, salvage value only
+Rules:
+- Good = no visible damage, clean
+- Average = minor scratches or wear
+- Poor = heavy damage, cracks, missing parts
+- Broken = visible cracks, shattered screen, major defects
 
-3. **Recyclability**: Consider metal content (gold, copper, rare earths) and material composition
-4. **Eco Score** (0-100):
-   - 80-100: Highly recyclable, good material value, minimal contamination
-   - 60-79: Recyclable, moderate value, some contamination
-   - 40-59: Partially recyclable, low value, significant damage
-   - 0-39: Mostly scrap, minimal material value
-
-Look for specific markers:
-- **Phones**: Screen quality, frame condition, camera lens clarity, bezels
-- **Laptops**: Screen cracks, keyboard functionality, hinge condition
-- **Batteries**: Swelling, corrosion, leakage
-- **PCBs**: Component availability, corrosion, traces integrity
-
-Return ONLY valid JSON:
+Return ONLY JSON:
 {
-  "object": "specific device name",
-  "condition": "working|partially working|damaged|scrap",
-  "suggestion": "recycling or repair recommendation",
-  "eco_score": 0-100 integer
+  "condition": "...",
+  "damage": "..."
 }
-
-Return JSON only, no explanation."""
+"""
 
 
 @dataclass
@@ -60,8 +45,12 @@ class VLMResult:
     """VLM analysis result"""
     object_name: str
     condition: str
+    condition_label: str
+    damage: str
+    confidence: float
     suggestion: str
     eco_score: int
+    damage_indicators: list[str]
 
 
 class VLMAnalyzer:
@@ -186,38 +175,78 @@ class VLMAnalyzer:
 
         try:
             data = json.loads(response_text)
+            condition_label = self._normalize_condition_label(str(data.get("condition", "Average")))
+            damage = self._normalize_damage(str(data.get("damage", "Not Broken")))
+            working_condition = "damaged" if condition_label == "Poor" or damage == "Broken" else "working"
             return VLMResult(
-                object_name=str(data.get("object", "unknown object")).strip(),
-                condition=self._normalize_condition(str(data.get("condition", "unknown"))),
-                suggestion=str(data.get("suggestion", "No recycling advice available.")).strip(),
-                eco_score=max(0, min(100, int(data.get("eco_score", 50)))),
+                object_name=str(data.get("object", "electronic component")).strip(),
+                condition=working_condition,
+                condition_label=condition_label,
+                damage=damage,
+                confidence=max(0.0, min(1.0, float(data.get("confidence", 0.65)))),
+                suggestion=str(data.get("suggestion", f"Condition {condition_label}; damage {damage}.")).strip(),
+                eco_score=max(0, min(100, int(data.get("eco_score", 60)))),
+                damage_indicators=self._extract_damage_indicators(
+                    str(data.get("suggestion", "")),
+                    str(data.get("object", "")),
+                    str(data.get("damage", "")),
+                ),
             )
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.warning(f"Failed to parse VLM response: {e}. Using fallback.")
             return self._fallback_analysis(b"")
 
-    def _normalize_condition(self, condition: str) -> str:
-        """Normalize condition string to standard values"""
+    def _normalize_condition_label(self, condition: str) -> str:
+        """Normalize condition to Good/Average/Poor."""
         condition = condition.lower().strip()
-        valid_conditions = {"working", "partially working", "damaged", "scrap"}
-
-        if condition in valid_conditions:
-            return condition
-
-        # Map variations to standard values
         mapping = {
-            "good": "working",
-            "excellent": "working",
-            "ok": "partially working",
-            "fair": "partially working",
-            "bad": "damaged",
-            "broken": "damaged",
-            "defective": "damaged",
-            "recycled": "scrap",
-            "waste": "scrap",
+            "good": "Good",
+            "excellent": "Good",
+            "average": "Average",
+            "fair": "Average",
+            "poor": "Poor",
+            "bad": "Poor",
         }
+        if condition in mapping:
+            return mapping[condition]
+        if "poor" in condition or "broken" in condition or "major" in condition:
+            return "Poor"
+        if "average" in condition or "minor" in condition or "wear" in condition:
+            return "Average"
+        if "good" in condition or "clean" in condition:
+            return "Good"
+        return "Average"
 
-        return mapping.get(condition, "partially working")
+    def _normalize_damage(self, damage: str) -> str:
+        value = damage.lower().strip()
+        if value in {"broken", "yes", "damaged"}:
+            return "Broken"
+        if value in {"not broken", "no", "not_broken", "intact"}:
+            return "Not Broken"
+        if "broken" in value and "not" not in value:
+            return "Broken"
+        return "Not Broken"
+
+    def _extract_damage_indicators(self, *texts: str) -> list[str]:
+        indicators = []
+        allowed = {
+            "crack": "cracks",
+            "cracks": "cracks",
+            "burn": "burns",
+            "burns": "burns",
+            "broken": "broken parts",
+            "broken part": "broken parts",
+            "broken parts": "broken parts",
+            "exposed wire": "exposed wires",
+            "exposed wires": "exposed wires",
+            "missing component": "missing components",
+            "missing components": "missing components",
+        }
+        haystack = " ".join(texts).lower()
+        for raw, normalized in allowed.items():
+            if raw in haystack and normalized not in indicators:
+                indicators.append(normalized)
+        return indicators
 
     def _fallback_analysis(self, image_bytes: bytes) -> VLMResult:
         """
@@ -231,25 +260,15 @@ class VLMAnalyzer:
         except Exception:
             brightness = 128
 
-        # Simple heuristic based on brightness
-        if brightness >= 150:
-            condition = "working"
-            eco_score = 85
-            suggestion = "Device appears to be in good condition. Perform data wipe and resell."
-        elif brightness >= 100:
-            condition = "partially working"
-            eco_score = 60
-            suggestion = "Minor damages detected. Test functionality and resell if working."
-        else:
-            condition = "damaged"
-            eco_score = 40
-            suggestion = "Device appears damaged. Salvage reusable components and recycle."
-
         return VLMResult(
             object_name="electronic component",
-            condition=condition,
-            suggestion=suggestion,
-            eco_score=eco_score,
+            condition="working",
+            condition_label="Average",
+            damage="Not Broken",
+            confidence=0.55 if brightness >= 100 else 0.45,
+            suggestion="Fallback VLM used; defaulting to Average and Not Broken.",
+            eco_score=70 if brightness >= 100 else 60,
+            damage_indicators=[],
         )
 
 

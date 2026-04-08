@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 function IconDashboard() {
@@ -37,11 +37,11 @@ function IconDevices() {
   )
 }
 
-function IconRepair() {
+function IconAssistant() {
   return (
     <svg className="sidebar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"
+        d="M12 3C6.49 3 2 6.92 2 11.75c0 2.53 1.23 4.8 3.2 6.37L4 22l4.44-2.42c1.13.31 2.31.47 3.56.47 5.51 0 10-3.92 10-8.75S17.51 3 12 3zm-4 9h8v2H8v-2zm0-4h8v2H8V8z"
         fill="currentColor"
         opacity="0.9"
       />
@@ -61,30 +61,24 @@ function IconSettings() {
   )
 }
 
-function IconHybrid() {
-  return (
-    <svg className="sidebar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M21 9v6h-2V9h2zM3 15V9h2v6H3zm12-9c1.66 0 3 1.34 3 3v6c0 1.66-1.34 3-3 3H9c-1.66 0-3-1.34-3-3V9c0-1.66 1.34-3 3-3h6zm-2 2h-2v2H9v2h2v2h2v-2h2v-2h-2v-2z"
-        fill="currentColor"
-        opacity="0.9"
-      />
-    </svg>
-  )
-}
-
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', Icon: IconDashboard },
   { to: '/scan', label: 'Scan Device', Icon: IconScan },
-  { to: '/hybrid', label: 'Hybrid AI', Icon: IconHybrid },
-  { to: '/devices', label: 'My Devices', Icon: IconDevices },
-  { to: '/repair', label: 'Repair Master', Icon: IconRepair },
+  { to: '/my-devices', label: 'My Devices', Icon: IconDevices },
+  { to: '/assistant', label: 'AI Assistant', Icon: IconAssistant },
   { to: '/settings', label: 'Settings', Icon: IconSettings },
 ]
 
 export function WorkspaceShell({ children }) {
   const { logout, user } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+
+  function isActivePath(path) {
+    if (path === '/dashboard') return location.pathname === '/dashboard'
+    if (path === '/my-devices') return location.pathname.startsWith('/my-devices')
+    return location.pathname === path
+  }
 
   function handleLogout() {
     logout()
@@ -108,15 +102,14 @@ export function WorkspaceShell({ children }) {
           {navItems.map((item) => {
             const NavIcon = item.Icon
             return (
-              <NavLink
-                key={item.to}
+              <Link
+                key={`${item.to}-${item.label}`}
                 to={item.to}
-                className={({ isActive }) => `saas-nav-item${isActive ? ' active' : ''}`}
-                end={item.to === '/dashboard'}
+                className={`saas-nav-item${isActivePath(item.to) ? ' active' : ''}`}
               >
                 <NavIcon />
                 <span>{item.label}</span>
-              </NavLink>
+              </Link>
             )
           })}
         </nav>

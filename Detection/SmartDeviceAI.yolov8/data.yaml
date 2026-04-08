@@ -1,0 +1,12 @@
+train: C:/State-Secrets/Projects/INFT/SB Project - clone 2/Dataset/train/images
+val: C:/State-Secrets/Projects/INFT/SB Project - clone 2/Dataset/val/images
+
+nc: 4
+names: ['laptop', 'mobile', 'powerbank', 'tablet']
+
+roboflow:
+  workspace: studys-workspace-h8gsh
+  project: studys-workspace-h8gsh
+  version: dataset
+  license: Private
+  url: https://app.roboflow.com/studys-workspace-h8gsh/studys-workspace-h8gsh/dataset

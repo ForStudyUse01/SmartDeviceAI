@@ -1,7 +1,7 @@
 /**
- * Valuation + decision engine — static metal prices, water-damage rules.
+ * Valuation + decision engine — live metal prices, water-damage rules.
  */
-import { metalPrices } from './metalPrices'
+import { buildMetalCompositionNote } from './liveMetalPrices'
 
 const CONDITION_FACTORS = { Good: 1, Average: 0.7, Poor: 0.4 }
 
@@ -33,13 +33,13 @@ function riskForCondition(condition, waterDamage) {
 }
 
 /**
- * Metal recovery INR from static `metalPrices` (₹/10g gold & palladium, ₹/g silver, ₹/kg copper).
+ * Metal recovery INR from live price snapshot (₹/10g gold & palladium, ₹/g silver, ₹/kg copper).
  */
-export function estimateMetalRecoveryInr(deviceType) {
-  const g = metalPrices.gold
-  const s = metalPrices.silver
-  const c = metalPrices.copper
-  const p = metalPrices.palladium
+export function estimateMetalRecoveryInr(deviceType, livePrices) {
+  const g = Number(livePrices?.gold || 0)
+  const s = Number(livePrices?.silver || 0)
+  const c = Number(livePrices?.copper || 0)
+  const p = Number(livePrices?.palladium || 0)
   const t = String(deviceType || '').toLowerCase()
   let goldMg = 35
   let silverMg = 40
@@ -127,7 +127,7 @@ export function computeSmartDecision({
   }
 }
 
-export function computeManualValuation(row, form) {
+export function computeManualValuation(row, form, livePrices) {
   const basePrice = Number(row.Original_Price) || Number(row.base_price_inr) || 0
   const condition = String(form.conditionLabel || row.Condition_Label || 'Good').trim()
   const cf = CONDITION_FACTORS[condition] ?? 0.65
@@ -140,7 +140,7 @@ export function computeManualValuation(row, form) {
   const profit = net >= 0 ? net : 0
   const loss = net < 0 ? -net : 0
 
-  const metalRecoveryValue = estimateMetalRecoveryInr(row.Device_Type || row.category)
+  const metalRecoveryValue = estimateMetalRecoveryInr(row.Device_Type || row.category, livePrices)
 
   const { decision, bestOptionLabel, alternatives } = computeSmartDecision({
     conditionLabel: condition,
@@ -196,8 +196,7 @@ export function computeManualValuation(row, form) {
       bodyDamage: form.bodyDamage,
       waterDamage: form.waterDamage,
     },
-    metalCompositionNote:
-      'Estimated content uses category weights vs static spot: gold ₹7200/10g, silver ₹88/g, copper ₹765/kg, palladium ₹2400/10g.',
+    metalCompositionNote: buildMetalCompositionNote(livePrices),
   }
 }
 

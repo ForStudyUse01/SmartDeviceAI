@@ -1,6 +1,7 @@
 import { enrichScan } from '../lib/valuation'
+import { getFormattedMetalRows } from '../lib/liveMetalPrices'
 
-export function ScanResultCard({ scan }) {
+export function ScanResultCard({ scan, liveMetalPrices }) {
   if (!scan) {
     return (
       <div className="empty-state">
@@ -57,6 +58,7 @@ export function ScanResultCard({ scan }) {
   const showProfit = (s.profit ?? 0) > 0
   const showLoss = (s.loss ?? 0) > 0
   const di = s.deviceInfo
+  const metalRows = getFormattedMetalRows(liveMetalPrices?.prices)
 
   return (
     <div className="scan-result-sections">
@@ -144,12 +146,40 @@ export function ScanResultCard({ scan }) {
       <div className="scan-section">
         <h3 className="scan-section-title">Metal composition (value)</h3>
         <div className="scan-section-body">
+          <div className="live-metal-header">
+            {liveMetalPrices?.prices && !liveMetalPrices?.error ? (
+              <span className="live-metal-status">
+                <span className="live-dot" aria-hidden="true" />
+                Live
+              </span>
+            ) : (
+              <span className="live-metal-status muted">Market data</span>
+            )}
+            {liveMetalPrices?.loading ? (
+              <span className="live-metal-meta">Fetching live market data...</span>
+            ) : liveMetalPrices?.error ? (
+              <span className="live-metal-meta live-metal-error">{liveMetalPrices.error}</span>
+            ) : liveMetalPrices?.prices?.updatedAt ? (
+              <span className="live-metal-meta">
+                Updated {new Date(liveMetalPrices.prices.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            ) : null}
+          </div>
+          {metalRows.length > 0 ? (
+            <div className="live-metal-grid">
+              {metalRows.map((metal) => (
+                <div key={metal.key} className="live-metal-item">
+                  <span className="result-key">{metal.label}</span>
+                  <span className="live-metal-value">{metal.value}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="result-value" style={{ fontSize: '1.25rem' }}>
             ₹{(s.metalRecoveryValue ?? s.value ?? 0).toLocaleString('en-IN')}
           </div>
           <p className="metric-hint" style={{ marginTop: 8 }}>
-            {s.metalCompositionNote ||
-              'Static spot reference: gold ₹7200/10g, silver ₹88/g, copper ₹765/kg, palladium ₹2400/10g — weighted by device category.'}
+            {s.metalCompositionNote}
           </p>
         </div>
       </div>

@@ -6,14 +6,14 @@ export function SettingsPage() {
 
   return (
     <div className="dashboard-layout">
-      <section className="page-hero-saas">
+      <section className="page-hero-saas premium-hero-section">
         <span className="eyebrow eyebrow-indigo">Preferences</span>
         <h1 className="dashboard-title">Settings</h1>
         <p className="dashboard-subtitle">Workspace preferences for SmartDeviceAI.</p>
       </section>
 
-      <div className="content-grid">
-        <div className="glass-panel panel-hover saas-card">
+      <div className="content-grid settings-grid">
+        <div className="glass-panel panel-hover saas-card premium-panel">
           <h2 className="panel-title">Appearance</h2>
           <p className="panel-subtitle">Theme is fixed for this build: dark slate background, indigo accent.</p>
           <div className="field">
@@ -22,7 +22,7 @@ export function SettingsPage() {
           </div>
         </div>
 
-        <div className="glass-panel panel-hover saas-card">
+        <div className="glass-panel panel-hover saas-card premium-panel">
           <h2 className="panel-title">Notifications</h2>
           <p className="panel-subtitle">Local preference only (not persisted to server).</p>
           <label className="settings-check">

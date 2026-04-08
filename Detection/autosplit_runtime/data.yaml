@@ -1,0 +1,9 @@
+path: C:\State-Secrets\Projects\INFT\SB Project - clone 2\Detection\autosplit_runtime
+train: train/images
+val: val/images
+names:
+- laptop
+- mobile
+- powerbank
+- tablet
+nc: 4

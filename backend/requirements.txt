@@ -21,3 +21,4 @@ pandas>=2.3.3
 scikit-learn>=1.7.2
 joblib>=1.5.2
 yfinance>=0.2.66
+httpx>=0.28.0

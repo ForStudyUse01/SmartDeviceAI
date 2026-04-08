@@ -1,27 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ScanResultCard } from '../components/ScanResultCard'
 import { useAuth } from '../context/AuthContext'
+import { useLiveMetalPrices } from '../hooks/useLiveMetalPrices'
+import { aiDeviceScan } from '../lib/api'
 import { parseCsv } from '../lib/csv'
 import { brandsForType, deviceTypes, findDeviceRow, modelsForBrand } from '../lib/datasetUtils'
 import { saveDeviceEntry } from '../lib/deviceHistory'
-import { analyzeDeviceImages } from '../lib/api'
 import { computeManualValuation } from '../lib/valuation'
-
-const AI_DEVICE_MAP = {
-  phone: 'Phone',
-  laptop: 'Laptop',
-  tablet: 'Tablet',
-  charger: 'Charger',
-  powerbank: 'Powerbank',
-  pcb: 'PCB',
-}
-
-const AI_CONDITION_MAP = {
-  Excellent: 'Good',
-  Good: 'Good',
-  Fair: 'Average',
-  Poor: 'Poor',
-}
 
 function normalizeValue(value) {
   return String(value || '')
@@ -29,11 +14,34 @@ function normalizeValue(value) {
     .toLowerCase()
 }
 
+function confidenceToPercent(value) {
+  const numeric = Number(value || 0)
+  if (numeric <= 1) return Math.round(numeric * 100)
+  return Math.round(numeric)
+}
+
+function confidenceLabel(value) {
+  const percent = confidenceToPercent(value)
+  if (percent < 50) return 'Low confidence'
+  if (percent < 70) return 'Medium confidence'
+  return 'High confidence'
+}
+
+function confidenceTone(value, explicitLabel = '') {
+  const normalized = String(explicitLabel || '').toLowerCase()
+  if (normalized === 'high' || normalized === 'medium' || normalized === 'low') return normalized
+  const percent = confidenceToPercent(value)
+  if (percent < 50) return 'low'
+  if (percent < 70) return 'medium'
+  return 'high'
+}
+
 function buildValidationResult({
   status,
   message,
   aiResult = null,
   matchScore = 0,
+  reasons = [],
   manualSnapshot,
 }) {
   return {
@@ -42,17 +50,29 @@ function buildValidationResult({
       message,
       matchScore,
       aiDetectedDevice: aiResult?.detected_device || 'Not detected',
-      aiCondition: aiResult?.ai_condition || 'Not analyzed',
+      aiCondition: aiResult?.vlm_condition || aiResult?.ai_condition || 'Not analyzed',
       aiSuggestion: aiResult?.suggestion || '',
-      aiConfidence: Math.round(aiResult?.confidence || 0),
+      aiConfidence: confidenceToPercent(aiResult?.confidence || 0),
+      aiConfidenceLabel: confidenceLabel(aiResult?.confidence || 0),
+      reasons,
       requiresImage: status === 'missing-image',
     },
+    aiDetected: aiResult
+      ? {
+          detected_device_type: aiResult?.detected_device || 'mobile',
+          confidence: aiResult?.confidence ?? 0.4,
+          confidence_label: aiResult?.confidence_label || 'low',
+          detected_objects: aiResult?.detected_objects || [],
+        }
+      : null,
     deviceInfo: manualSnapshot,
   }
 }
 
 export function ScanPage() {
+  const scanSectionRef = useRef(null)
   const { token } = useAuth()
+  const liveMetalPrices = useLiveMetalPrices()
   const [dataset, setDataset] = useState([])
   const [loadError, setLoadError] = useState('')
 
@@ -68,8 +88,16 @@ export function ScanPage() {
 
   const [result, setResult] = useState(null)
   const [selectedFiles, setSelectedFiles] = useState([])
+  const [previewImages, setPreviewImages] = useState([])
+  const [hoveredPreview, setHoveredPreview] = useState(-1)
   const [imageLoading, setImageLoading] = useState(false)
   const [imageError, setImageError] = useState('')
+
+  useEffect(() => {
+    return () => {
+      previewImages.forEach((previewUrl) => URL.revokeObjectURL(previewUrl))
+    }
+  }, [previewImages])
 
   useEffect(() => {
     let cancelled = false
@@ -141,44 +169,30 @@ export function ScanPage() {
     [ageYears, conditionLabel, screenDamage, bodyDamage, waterDamage],
   )
 
-  function resolveAiDeviceType(aiDevice) {
-    const mapped = AI_DEVICE_MAP[String(aiDevice || '').trim().toLowerCase()]
-    if (!mapped) return ''
-    return types.find((entry) => entry.toLowerCase() === mapped.toLowerCase()) || ''
+  function getPrimaryDetection(analysis) {
+    if (!analysis) return null
+    if (Array.isArray(analysis.detected_objects) && analysis.detected_objects.length > 0) {
+      return analysis.detected_objects[0]
+    }
+    if (Array.isArray(analysis.results)) {
+      for (const entry of analysis.results) {
+        if (Array.isArray(entry.detected_objects) && entry.detected_objects.length > 0) {
+          return entry.detected_objects[0]
+        }
+      }
+    }
+    return null
   }
 
-  function calculateMatchScore(aiResult) {
-    const normalizedManualType = normalizeValue(deviceType)
-    const normalizedAiType = normalizeValue(resolveAiDeviceType(aiResult.detected_device) || aiResult.detected_device)
-    const normalizedManualCondition = normalizeValue(conditionLabel)
-    const normalizedAiCondition = normalizeValue(AI_CONDITION_MAP[aiResult.ai_condition] || aiResult.ai_condition)
-    const aiConfidence = Number(aiResult.confidence) || 0
-
-    let score = 0
-
-    if (normalizedAiType && normalizedAiType === normalizedManualType) {
-      score += 50
-    } else if (
-      (!normalizedAiType || normalizedAiType === 'unknown') &&
-      aiConfidence >= 60
-    ) {
-      // If the image analysis is reasonably confident but cannot name the device,
-      // give partial credit instead of blocking otherwise-valid photos.
-      score += 40
+  function mapDetectedCondition(rawCondition) {
+    const normalized = normalizeValue(rawCondition)
+    if (normalized.includes('working') || normalized.includes('good') || normalized.includes('excellent')) {
+      return 'Good'
     }
-
-    if (normalizedAiCondition && normalizedAiCondition === normalizedManualCondition) {
-      score += 30
-    } else if (
-      (normalizedManualCondition === 'good' && normalizedAiCondition === 'average') ||
-      (normalizedManualCondition === 'average' && normalizedAiCondition === 'good')
-    ) {
-      score += 20
+    if (normalized.includes('average') || normalized.includes('fair')) {
+      return 'Average'
     }
-
-    score += Math.min(20, Math.round(aiConfidence / 5))
-
-    return Math.min(100, score)
+    return 'Poor'
   }
 
   async function handleSubmit(event) {
@@ -223,39 +237,59 @@ export function ScanPage() {
     setImageError('')
 
     try {
-      const aiResult = await analyzeDeviceImages({
-        deviceType,
-        model,
-        condition: conditionLabel,
-        age: ageYears,
+      const response = await aiDeviceScan(token, {
         images: selectedFiles,
+        device_type: deviceType,
+        brand,
+        model,
+        age: ageYears,
+        condition: conditionLabel,
+        screen_damage: screenDamage === 'Yes',
+        body_damage: bodyDamage === 'Yes',
+        water_damage: waterDamage === 'Yes',
       })
-      const matchScore = calculateMatchScore(aiResult)
-
-      if (matchScore < 70) {
+      if (!response.success) {
+        const mismatchMessage = response.error || 'User input does not match AI-detected device'
+        setImageError(mismatchMessage)
         setResult(
           buildValidationResult({
             status: 'mismatch',
-            message:
-              'Manual input and AI scan do not match strongly enough. Please insert an appropriate image or correct the manual details, then calculate again.',
-            aiResult,
-            matchScore,
+            message: mismatchMessage,
+            aiResult: response.detected || null,
+            matchScore: Number(response.match_score ?? 0),
+            reasons: Array.isArray(response.reasons) ? response.reasons : [],
             manualSnapshot,
           }),
         )
         return
       }
 
-      const computed = computeManualValuation(selectedRow, form)
+      const primaryDetection = getPrimaryDetection(response.final_analysis)
+      let priceSnapshot = liveMetalPrices.prices
+      if (!priceSnapshot) {
+        try {
+          priceSnapshot = await liveMetalPrices.refreshPrices({ force: true })
+        } catch {
+          priceSnapshot = null
+        }
+      }
+
+      const computed = computeManualValuation(selectedRow, form, priceSnapshot)
       computed.validation = {
         status: 'approved',
         message: 'AI verification passed. The image and manual input are aligned well enough to show the estimate.',
-        matchScore,
-        aiDetectedDevice: aiResult.detected_device,
-        aiCondition: aiResult.ai_condition,
-        aiSuggestion: aiResult.suggestion || '',
-        aiConfidence: Math.round(aiResult.confidence || 0),
+        matchScore: Number(response.match_score ?? 100),
+        aiDetectedDevice: response.detected?.detected_device_type || 'unknown',
+        aiCondition: response.detected?.vlm_condition || mapDetectedCondition(response.detected?.detected_condition || ''),
+        aiSuggestion: primaryDetection?.suggestion || '',
+        aiConfidence: confidenceToPercent(response.detected?.confidence || 0),
+        aiConfidenceLabel: response.detected?.confidence_label
+          ? `${String(response.detected.confidence_label).charAt(0).toUpperCase()}${String(response.detected.confidence_label).slice(1)} confidence`
+          : confidenceLabel(response.detected?.confidence || 0),
+        reasons: Array.isArray(response.reasons) ? response.reasons : [],
       }
+      computed.aiDetected = response.detected
+      computed.finalAnalysis = response.final_analysis
       setResult(computed)
       saveDeviceEntry(computed)
     } catch (error) {
@@ -265,22 +299,77 @@ export function ScanPage() {
     }
   }
 
+  function handleImageSelection(event) {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) {
+      setSelectedFiles([])
+      setPreviewImages((prev) => {
+        prev.forEach((previewUrl) => URL.revokeObjectURL(previewUrl))
+        return []
+      })
+      setImageError('')
+      return
+    }
+
+    const validMime = new Set(['image/jpeg', 'image/png', 'image/jpg'])
+    const invalidFiles = files.filter((file) => !validMime.has(file.type))
+    if (invalidFiles.length > 0) {
+      setImageError('Only JPG and PNG images are allowed.')
+    } else {
+      setImageError('')
+    }
+
+    const filtered = files.filter((file) => validMime.has(file.type)).slice(0, 4)
+    if (files.length > 4) {
+      setImageError('Upload between 1 and 4 images for AI analysis.')
+    }
+
+    setSelectedFiles(filtered)
+    setPreviewImages((prev) => {
+      prev.forEach((previewUrl) => URL.revokeObjectURL(previewUrl))
+      return filtered.map((file) => URL.createObjectURL(file))
+    })
+  }
+
+  function handleRemoveImage(index) {
+    setSelectedFiles((prev) => prev.filter((_, currentIndex) => currentIndex !== index))
+    setPreviewImages((prev) => {
+      const copy = [...prev]
+      const [removed] = copy.splice(index, 1)
+      if (removed) URL.revokeObjectURL(removed)
+      return copy
+    })
+  }
+
+  function scrollToScanSection() {
+    scanSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
     <div className="dashboard-layout">
-      <section className="page-hero-saas">
-        <span className="eyebrow eyebrow-indigo">Core system</span>
-        <h1 className="dashboard-title">SmartDeviceAI Dashboard</h1>
-        <p className="dashboard-subtitle">
-          Blend AI-assisted verification with manual lifecycle inputs to produce a clean, reviewable device estimate.
-        </p>
+      <section className="page-hero-saas scan-hero-experience premium-hero-section">
+        <div className="scan-hero-copy">
+          <span className="eyebrow eyebrow-indigo">AI device workflow</span>
+          <h1 className="dashboard-title">AI Device Scan & Analysis</h1>
+          <p className="dashboard-subtitle">
+            Upload your device image and get instant AI-powered condition analysis and valuation.
+          </p>
+          <div className="scan-hero-features">
+            <div className="scan-hero-feature">AI Detection (YOLO)</div>
+            <div className="scan-hero-feature">Condition Analysis (VLM)</div>
+            <div className="scan-hero-feature">Smart Valuation</div>
+          </div>
+          <button type="button" className="primary-button" onClick={scrollToScanSection}>
+            Start Scan
+          </button>
+        </div>
       </section>
 
-      <section className="content-grid">
-        <div className="glass-panel panel-hover saas-card">
-          <h2 className="panel-title">A. Manual input</h2>
+      <section className="content-grid scan-workspace-grid" ref={scanSectionRef}>
+        <div className="glass-panel panel-hover saas-card premium-panel">
+          <h2 className="panel-title">AI Device Scan & Analysis</h2>
           <p className="panel-subtitle">
-            Add manual device details and attach 1 to 4 images. The final estimate appears only after the AI scan and
-            manual input match at 70% or higher.
+            Upload 1 to 4 images, complete manual input, then run one unified AI scan.
           </p>
           {loadError ? <div className="error-banner">{loadError}</div> : null}
 
@@ -289,7 +378,7 @@ export function ScanPage() {
               <div className="manual-ai-copy">
                 <span className="manual-ai-label">AI image scan</span>
                 <p className="panel-subtitle">
-                  Use 1 to 4 device images. The AI check runs automatically when you click Calculate estimate.
+                  Step 1: Upload at least one image. Step 2: complete all manual fields. Step 3: Run AI Scan.
                 </p>
               </div>
 
@@ -297,11 +386,8 @@ export function ScanPage() {
                 <input
                   type="file"
                   multiple
-                  accept="image/png,image/jpeg,image/jpg"
-                  onChange={(event) => {
-                    setSelectedFiles(Array.from(event.target.files || []))
-                    setImageError('')
-                  }}
+                  accept=".jpg,.jpeg,.png,image/png,image/jpeg"
+                  onChange={handleImageSelection}
                 />
                 <span className="upload-meta">
                   {selectedFiles.length
@@ -311,6 +397,36 @@ export function ScanPage() {
               </div>
 
             </div>
+
+            {previewImages.length > 0 ? (
+              <div className="scan-previews-wrap">
+                <span className="manual-ai-label">Image previews</span>
+                <div className={`scan-preview-grid${previewImages.length === 1 ? ' single' : ''}`}>
+                  {previewImages.map((previewUrl, index) => (
+                    <div
+                      key={previewUrl}
+                      onMouseEnter={() => setHoveredPreview(index)}
+                      onMouseLeave={() => setHoveredPreview(-1)}
+                      className={`scan-preview-card${hoveredPreview === index ? ' active' : ''}`}
+                    >
+                      <img
+                        src={previewUrl}
+                        alt={`Selected preview ${index + 1}`}
+                        className="scan-preview-image"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveImage(index)}
+                        className="scan-preview-remove"
+                        aria-label={`Remove image ${index + 1}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {imageError ? <div className="error-banner">{imageError}</div> : null}
 
@@ -421,16 +537,65 @@ export function ScanPage() {
               </select>
             </div>
 
-            <button type="submit" className="primary-button" disabled={!selectedRow}>
-              {imageLoading ? 'Analyzing image and calculating...' : 'Calculate estimate'}
+            <button type="submit" className="primary-button" disabled={!selectedRow || selectedFiles.length === 0 || imageLoading}>
+              {imageLoading ? 'Running AI scan...' : 'Run AI Scan'}
             </button>
           </form>
         </div>
 
-        <div className="glass-panel panel-hover saas-card">
+        <div className="glass-panel panel-hover saas-card premium-panel">
           <h2 className="panel-title">B. Result</h2>
           <p className="panel-subtitle">Estimated value, metal composition value, profit/loss, and recommended action.</p>
-          <ScanResultCard scan={result} />
+          {result?.aiDetected ? (
+            <div className="scan-detected-summary">
+              <strong className="scan-detected-title">Detected results</strong>
+              <div className="scan-detected-line">
+                Device: <strong>{result.aiDetected.detected_device_type || 'Not detected'}</strong>
+              </div>
+              <div className="scan-detected-line">
+                Confidence: <strong>{confidenceToPercent(result.aiDetected.confidence)}%</strong> (
+                {result.aiDetected.confidence_label
+                  ? `${String(result.aiDetected.confidence_label).charAt(0).toUpperCase()}${String(result.aiDetected.confidence_label).slice(1)}`
+                  : confidenceLabel(result.aiDetected.confidence).replace(' confidence', '')}
+                )
+              </div>
+              <div className="scan-detected-line">
+                <span className={`confidence-badge ${confidenceTone(result.aiDetected.confidence, result.aiDetected.confidence_label)}`}>
+                  {confidenceTone(result.aiDetected.confidence, result.aiDetected.confidence_label).toUpperCase()}
+                </span>
+              </div>
+              <div className="scan-detected-line score">
+                Match score: <strong>{result.validation?.matchScore ?? 0}%</strong>
+              </div>
+              {(result.validation?.reasons || []).slice(0, 2).map((reason) => (
+                <div key={reason} className="result-warning-line">
+                  {'\u26A0'} {reason}
+                </div>
+              ))}
+              <div className="scan-detected-line">
+                VLM condition: <strong>{result.aiDetected.vlm_condition || 'Average'}</strong> | Damage:{' '}
+                <strong>{result.aiDetected.vlm_damage || 'Not Broken'}</strong>
+              </div>
+              {String(result.aiDetected.confidence_label || '').toLowerCase() === 'low' ? (
+                <div className="error-banner scan-detected-warning">
+                  Low confidence detection - result may vary
+                </div>
+              ) : null}
+              {result.aiDetected.detected_objects?.length ? (
+                <ul className="scan-detected-list">
+                  {result.aiDetected.detected_objects.map((obj, index) => (
+                    <li key={`${obj.yolo_label || obj.label || 'unknown'}-${index}`}>
+                      {obj.yolo_label || obj.label || 'unknown'} ({confidenceToPercent(obj.yolo_confidence ?? obj.confidence)}
+                      %)
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="scan-detected-empty">No supported device boxes detected.</div>
+              )}
+            </div>
+          ) : null}
+          <ScanResultCard scan={result} liveMetalPrices={liveMetalPrices} />
         </div>
       </section>
     </div>

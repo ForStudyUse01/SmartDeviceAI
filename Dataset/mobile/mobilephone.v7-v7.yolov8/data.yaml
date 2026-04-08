@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['Mobile-phone']
+
+roboflow:
+  workspace: m17865515473-163-com
+  project: mobilephone-wusj2
+  version: 7
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/m17865515473-163-com/mobilephone-wusj2/dataset/7

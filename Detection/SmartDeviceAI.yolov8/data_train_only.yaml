@@ -1,0 +1,9 @@
+path: C:\State-Secrets\Projects\INFT\SB Project - clone 2\Detection\SmartDeviceAI.yolov8
+train: train/images
+val: train/images
+names:
+- laptop
+- mobile
+- powerbank
+- tablet
+nc: 4

@@ -28,7 +28,7 @@ export function SignupPage() {
 
   return (
     <div className="auth-layout">
-      <div className="auth-card">
+      <div className="auth-card auth-card-premium">
         <span className="eyebrow">Signup</span>
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true"></span>

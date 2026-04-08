@@ -114,7 +114,6 @@ export function HybridAIPage() {
   return (
     <div className="dashboard-layout">
       <section className="page-hero-saas">
-        <span className="eyebrow eyebrow-indigo">Advanced AI Pipeline</span>
         <h1 className="dashboard-title">E-waste Detection & Analysis</h1>
         <p className="dashboard-subtitle">
           Upload images to identify electronic waste objects. YOLO detects components and our VLM analyzes their condition with recycling recommendations.
@@ -252,48 +251,20 @@ export function HybridAIPage() {
 
                   {imageResult.detected_objects && imageResult.detected_objects.map((obj, idx) => (
                     <div key={idx} style={{
-                      padding: '1rem',
+                      padding: '1.5rem',
                       backgroundColor: 'var(--panel-bg)',
                       borderRadius: '8px',
                       border: '1px solid var(--border)',
-                      marginBottom: '0.75rem'
+                      marginBottom: '1rem',
+                      fontFamily: 'monospace',
+                      fontSize: '1rem',
+                      lineHeight: '1.8'
                     }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
-                        <div>
-                          <h4 style={{ margin: '0 0 0.25rem 0' }}>{obj.vlm_object}</h4>
-                          <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                            YOLO: {obj.yolo_label} ({Math.round(obj.yolo_confidence)}%)
-                          </div>
-                        </div>
-                        <div style={{
-                          backgroundColor: obj.eco_score > 70 ? '#10b98122' : obj.eco_score > 40 ? '#f59e0b22' : '#ef444422',
-                          color: obj.eco_score > 70 ? '#10b981' : obj.eco_score > 40 ? '#f59e0b' : '#ef4444',
-                          padding: '6px 12px',
-                          borderRadius: '6px',
-                          fontSize: '0.9rem',
-                          fontWeight: 600,
-                          minWidth: 'max-content'
-                        }}>
-                          Eco Score: {obj.eco_score}/100
-                        </div>
-                      </div>
-
-                      <div style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1fr 1fr',
-                        gap: '1rem',
-                        paddingTop: '0.75rem',
-                        borderTop: '1px solid var(--border)'
-                      }}>
-                        <div>
-                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Condition</div>
-                          <div style={{ fontWeight: 500 }}>{obj.condition}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Recommendation</div>
-                          <div style={{ fontSize: '0.95rem', lineHeight: 1.4 }}>{obj.suggestion}</div>
-                        </div>
-                      </div>
+                      <div><strong>Accuracy :</strong> {Math.round(obj.yolo_confidence)}%</div>
+                      <div><strong>Device Type :</strong> {obj.vlm_object}</div>
+                      <div><strong>Condition :</strong> {obj.condition}</div>
+                      <div><strong>Details about conditions :</strong> {obj.details}</div>
+                      <div><strong>Recommendations :</strong> {obj.suggestion}</div>
                     </div>
                   ))}
                 </div>
