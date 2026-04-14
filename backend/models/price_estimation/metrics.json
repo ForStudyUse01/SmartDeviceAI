@@ -1,0 +1,23 @@
+{
+  "linear_regression": {
+    "mae": 3150.9732050130524,
+    "rmse": 4805.090530246595,
+    "r2": 0.9357698143817509,
+    "evaluation_points": 115
+  },
+  "random_forest": {
+    "mae": 3252.3623188405795,
+    "rmse": 6381.863640549683,
+    "r2": 0.8866996975226512,
+    "evaluation_points": 115
+  },
+  "kmeans": {
+    "mae": 7953.611720445354,
+    "rmse": 11240.691911888927,
+    "r2": 0.6485025993761812,
+    "evaluation_points": 115
+  },
+  "n_clusters": 8,
+  "test_size": 0.2,
+  "test_evaluation_n": 115
+}

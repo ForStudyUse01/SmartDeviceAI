@@ -1026,6 +1026,72 @@ button {
   line-height: 1.5;
 }
 
+/* ML price estimate (Estimated value card) */
+.scan-ml-estimate {
+  margin-top: 14px;
+  padding: 12px 12px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(124, 92, 255, 0.35);
+  background: linear-gradient(145deg, rgba(124, 92, 255, 0.12), rgba(15, 23, 42, 0.55));
+  box-shadow: 0 0 24px rgba(124, 92, 255, 0.12);
+}
+
+.scan-ml-divider {
+  height: 1px;
+  margin: 0 0 10px;
+  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.35), transparent);
+}
+
+.scan-ml-head {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
+  margin-bottom: 6px;
+}
+
+.scan-ml-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scan-ml-price {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.scan-ml-trend {
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.scan-ml-trend-up {
+  color: #4ade80;
+}
+
+.scan-ml-trend-down {
+  color: #fb923c;
+}
+
+.scan-ml-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.scan-ml-meta strong {
+  color: var(--muted-strong);
+  font-weight: 600;
+}
+
 .metal-chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -2396,5 +2462,466 @@ button {
   #ai-cursor,
   #ai-cursor-trail {
     display: none;
+  }
+}
+
+/* --- ML price estimator (local sklearn) --- */
+.ml-price-page {
+  min-height: 100vh;
+  padding: var(--space-7) var(--space-4) var(--space-8);
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.ml-price-inner {
+  padding: var(--space-7);
+}
+
+.ml-price-header {
+  margin-bottom: var(--space-6);
+}
+
+.ml-price-title {
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.ml-price-lead {
+  color: var(--muted);
+  margin: 0 0 var(--space-5);
+  max-width: 52rem;
+  font-size: 0.95rem;
+}
+
+.ml-price-code {
+  font-size: 0.82rem;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+}
+
+.ml-price-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ml-price-form {
+  margin-top: var(--space-4);
+}
+
+.ml-price-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.ml-price-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--muted-strong);
+}
+
+.ml-price-field input,
+.ml-price-field select {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.ml-price-submit {
+  width: 100%;
+  max-width: 280px;
+}
+
+.ml-price-banner {
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+}
+
+.ml-price-banner.error {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: #fecaca;
+}
+
+.ml-price-results {
+  margin-top: var(--space-7);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.ml-price-best-estimate-card {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(124, 92, 255, 0.34);
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.14), rgba(59, 130, 246, 0.1));
+}
+
+.ml-price-best-estimate-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.ml-price-best-estimate-value {
+  margin: 6px 0 0;
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.ml-price-results-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.ml-price-results-title {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.ml-price-results-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ml-price-best-score {
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ml-price-confidence {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.ml-price-confidence-high {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.ml-price-confidence-medium {
+  color: #fcd34d;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.ml-price-confidence-low {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+.ml-price-kmeans-note {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-2);
+  border-left: 3px solid rgba(124, 92, 255, 0.45);
+}
+
+.ml-price-chart {
+  margin: var(--space-5) 0 var(--space-6);
+}
+
+.ml-price-chart-title {
+  font-size: 0.85rem;
+  color: var(--muted-strong);
+  margin: 0 0 var(--space-2);
+}
+
+.ml-price-chart-legend {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: var(--space-2) 0 0;
+}
+
+.ml-price-table-note {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.ml-price-chart-svg {
+  width: 100%;
+  max-width: 440px;
+  height: auto;
+  display: block;
+}
+
+.ml-price-chart-label {
+  fill: var(--muted);
+  font-size: 9px;
+  font-family: inherit;
+}
+
+.ml-price-bar-best {
+  filter: drop-shadow(0 0 10px rgba(34, 197, 94, 0.35));
+}
+
+.ml-price-model-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ml-price-info-tip {
+  cursor: help;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  color: var(--secondary);
+}
+
+.ml-price-warn-tip {
+  cursor: help;
+  font-size: 0.85rem;
+  margin-right: 2px;
+}
+
+.ml-price-row-animate {
+  animation: ml-price-row-glow 2.2s ease-in-out infinite;
+}
+
+@keyframes ml-price-row-glow {
+  0%,
+  100% {
+    box-shadow: inset 3px 0 0 rgba(34, 197, 94, 0.55);
+  }
+  50% {
+    box-shadow: inset 3px 0 0 rgba(34, 197, 94, 0.95), 0 0 24px rgba(124, 92, 255, 0.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ml-price-row-animate {
+    animation: none;
+  }
+}
+
+.ml-price-results-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0 0 var(--space-4);
+}
+
+.ml-price-reason {
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--muted-strong);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(124, 92, 255, 0.08);
+}
+
+.ml-price-status {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.ml-price-status-best {
+  font-weight: 700;
+  color: #86efac;
+  font-size: 0.9rem;
+}
+
+.ml-price-table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(10, 16, 32, 0.5);
+}
+
+.ml-price-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.ml-price-table th,
+.ml-price-table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.ml-price-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ml-price-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ml-price-row-best {
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.12), rgba(124, 92, 255, 0.08));
+  box-shadow: inset 3px 0 0 rgba(34, 197, 94, 0.65);
+}
+
+.ml-price-row-best td:first-child {
+  font-weight: 700;
+}
+
+.ml-price-footnote {
+  margin-top: var(--space-4);
+  font-size: 0.78rem;
+  color: var(--muted);
+  max-width: 42rem;
+}
+
+.model-comp-page {
+  display: grid;
+  gap: 24px;
+}
+
+.model-comp-form {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.model-comp-form button {
+  grid-column: 1 / -1;
+  max-width: 260px;
+}
+
+.model-comp-results {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.model-comp-card.best {
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+
+.model-comp-chart-wrap {
+  margin-top: 8px;
+}
+
+.ml-model-comparison {
+  margin: var(--space-6) 0;
+  padding: var(--space-5);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(10, 16, 32, 0.5);
+}
+
+.ml-model-comparison-heading h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.ml-model-comparison-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.ml-model-comparison-grid {
+  margin-top: var(--space-4);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.ml-model-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.64);
+  padding: var(--space-4);
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ml-model-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(124, 92, 255, 0.42);
+  box-shadow: 0 14px 24px rgba(2, 6, 23, 0.34);
+}
+
+.ml-model-card.is-best {
+  border-color: rgba(34, 197, 94, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.24);
+}
+
+.ml-model-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: var(--space-3);
+}
+
+.ml-model-card-header h4 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.ml-model-badge {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.ml-model-metric {
+  margin: 0 0 var(--space-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.ml-model-metric strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.ml-model-comparison-empty {
+  margin: var(--space-4) 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 900px) {
+  .ml-model-comparison-grid {
+    grid-template-columns: 1fr;
   }
 }

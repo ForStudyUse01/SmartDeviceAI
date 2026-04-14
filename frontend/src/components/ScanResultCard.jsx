@@ -137,6 +137,40 @@ export function ScanResultCard({ scan, liveMetalPrices }) {
           <div className="result-value" style={{ marginTop: 6 }}>
             ₹{s.resaleValue?.toLocaleString?.('en-IN') ?? s.resaleValue}
           </div>
+          {s.mlPrediction && Number.isFinite(Number(s.mlPrediction.best_price)) ? (
+            <div className="scan-ml-estimate">
+              <div className="scan-ml-divider" aria-hidden="true" />
+              <div className="scan-ml-head">🤖 AI Predicted Price</div>
+              <div className="scan-ml-price-row">
+                <span className="scan-ml-price">
+                  ₹{Number(s.mlPrediction.best_price).toLocaleString('en-IN')}
+                </span>
+                {(() => {
+                  const ml = Number(s.mlPrediction.best_price)
+                  const resale = Number(s.resaleValue) || 0
+                  if (!(resale > 0) || !Number.isFinite(ml)) return null
+                  if (Math.abs(ml - resale) < 1) return null
+                  const up = ml > resale
+                  return (
+                    <span
+                      className={up ? 'scan-ml-trend scan-ml-trend-up' : 'scan-ml-trend scan-ml-trend-down'}
+                      title={up ? 'ML estimate above resale (after factors)' : 'ML estimate below resale (after factors)'}
+                    >
+                      {up ? '↑' : '↓'}
+                    </span>
+                  )
+                })()}
+              </div>
+              <div className="scan-ml-meta">
+                <span>
+                  Best Model: <strong>{s.mlPrediction.best_model_name || '—'}</strong>
+                </span>
+                <span>
+                  Confidence: <strong>{s.mlPrediction.confidence || '—'}</strong>
+                </span>
+              </div>
+            </div>
+          ) : null}
           <p className="metric-hint" style={{ marginTop: 8 }}>
             Repair allowance: 10–25% of list price by condition · profit = resale − repair.
           </p>

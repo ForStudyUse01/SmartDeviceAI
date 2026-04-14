@@ -1,0 +1,64 @@
+{
+  "Laptop": {
+    "Acer": {
+      "Aspire 7": 70000
+    },
+    "Asus": {
+      "ROG Strix": 110000,
+      "Vivobook": 60000
+    },
+    "Dell": {
+      "Inspiron": 65000,
+      "XPS 13": 120000
+    },
+    "HP": {
+      "Envy": 90000,
+      "Pavilion": 70000
+    },
+    "Lenovo": {
+      "Legion 5": 100000,
+      "ThinkPad": 80000
+    }
+  },
+  "Mobile": {
+    "Apple": {
+      "iPhone 11": 60000,
+      "iPhone 12": 70000,
+      "iPhone 13": 75000,
+      "iPhone 14": 80000
+    },
+    "Google": {
+      "Pixel 7": 60000
+    },
+    "OnePlus": {
+      "10R": 45000,
+      "9 Pro": 55000
+    },
+    "Realme": {
+      "Narzo 60": 18000
+    },
+    "Samsung": {
+      "Galaxy A52": 35000,
+      "Galaxy S21": 50000,
+      "Galaxy S22": 65000,
+      "Galaxy S23": 70000
+    },
+    "Xiaomi": {
+      "Redmi Note 12": 20000
+    }
+  },
+  "Tablet": {
+    "Apple": {
+      "iPad 9": 40000,
+      "iPad Air": 60000
+    },
+    "Lenovo": {
+      "Tab M10": 30000,
+      "Yoga Tab": 40000
+    },
+    "Samsung": {
+      "Tab S7": 45000,
+      "Tab S8": 65000
+    }
+  }
+}

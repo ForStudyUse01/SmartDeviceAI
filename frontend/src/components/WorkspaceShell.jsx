@@ -49,6 +49,14 @@ function IconAssistant() {
   )
 }
 
+function IconModelComparison() {
+  return (
+    <svg className="sidebar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 19h16v2H4v-2zM6 10h3v7H6v-7zm5-4h3v11h-3V6zm5 2h3v9h-3V8z" fill="currentColor" opacity="0.9" />
+    </svg>
+  )
+}
+
 function IconSettings() {
   return (
     <svg className="sidebar-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -64,6 +72,7 @@ function IconSettings() {
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', Icon: IconDashboard },
   { to: '/scan', label: 'Scan Device', Icon: IconScan },
+  { to: '/model-comparison', label: 'Model Comparison', Icon: IconModelComparison },
   { to: '/my-devices', label: 'My Devices', Icon: IconDevices },
   { to: '/assistant', label: 'AI Assistant', Icon: IconAssistant },
   { to: '/settings', label: 'Settings', Icon: IconSettings },

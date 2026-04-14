@@ -25,7 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "20"))
-FAST_AI_MODE = os.getenv("FAST_AI_MODE", "1").lower() in {"1", "true", "yes", "on"}
+# Default to full pipeline for better quality; set FAST_AI_MODE=1 only when low-latency fallback is needed.
+FAST_AI_MODE = os.getenv("FAST_AI_MODE", "0").lower() in {"1", "true", "yes", "on"}
 CORS_ORIGINS_RAW = os.getenv(
     "CORS_ORIGINS",
     "http://127.0.0.1:5173,http://localhost:5173,http://192.168.1.10:5173",

@@ -1,0 +1,7 @@
+{
+  "name": "smartdeviceai",
+  "private": true,
+  "scripts": {
+    "start:dashboard": "powershell -ExecutionPolicy Bypass -NoProfile -File ./scripts/start-dashboard.ps1"
+  }
+}

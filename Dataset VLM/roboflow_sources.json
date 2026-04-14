@@ -1,0 +1,38 @@
+[
+  {
+    "name": "mobile_phone_dataset",
+    "url": "https://universe.roboflow.com/datacluster-labs-agryi/mobile-phone-dataset/fork",
+    "workspace": "datacluster-labs-agryi",
+    "project": "mobile-phone-dataset",
+    "device_type": "mobile",
+    "default_condition": "Good",
+    "default_damage": "Not Broken"
+  },
+  {
+    "name": "broken_electronic_objects",
+    "url": "https://universe.roboflow.com/team-ks/broken-electronic-objects",
+    "workspace": "team-ks",
+    "project": "broken-electronic-objects",
+    "device_type": "mobile",
+    "default_condition": "Bad",
+    "default_damage": "Broken"
+  },
+  {
+    "name": "broken_laptop_parts",
+    "url": "https://universe.roboflow.com/team-ks/broken-laptop-parts",
+    "workspace": "team-ks",
+    "project": "broken-laptop-parts",
+    "device_type": "laptop",
+    "default_condition": "Bad",
+    "default_damage": "Broken"
+  },
+  {
+    "name": "new_v_laptop_broken",
+    "url": "https://universe.roboflow.com/provod1337/new-v-laptop-broken",
+    "workspace": "provod1337",
+    "project": "new-v-laptop-broken",
+    "device_type": "laptop",
+    "default_condition": "Bad",
+    "default_damage": "Broken"
+  }
+]

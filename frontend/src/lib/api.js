@@ -1,22 +1,103 @@
-const PROD_API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
-const PROD_AI_ANALYZE_URL = import.meta.env.VITE_AI_ANALYZE_URL || 'http://127.0.0.1:5000'
-const API_URL = import.meta.env.DEV ? '/api' : PROD_API_URL
-const AI_ANALYZE_URL = import.meta.env.DEV ? '/ai' : PROD_AI_ANALYZE_URL
+/** FastAPI dashboard — set `VITE_API_URL` in `frontend/.env` (e.g. http://127.0.0.1:8000). No trailing slash. */
+const DASHBOARD_API_BASE = String(import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000')
+  .trim()
+  .replace(/\/$/, '')
+
+/** YOLO/VLM service — `VITE_AI_ANALYZE_URL` (default http://127.0.0.1:5000). */
+const AI_API_BASE = String(import.meta.env.VITE_AI_ANALYZE_URL || 'http://127.0.0.1:5000')
+  .trim()
+  .replace(/\/$/, '')
+
+function dashboardUrl(path) {
+  const p = path.startsWith('/') ? path : `/${path}`
+  return `${DASHBOARD_API_BASE}${p}`
+}
+
+function aiUrl(path) {
+  const p = path.startsWith('/') ? path : `/${path}`
+  return `${AI_API_BASE}${p}`
+}
+
+function logDashboardApiFailure(context, response, data) {
+  console.error(`[dashboard API] ${context}`, {
+    url: response.url,
+    status: response.status,
+    body: data,
+  })
+}
 const REQUEST_TIMEOUT_MS = 25000
+/** Multipart AI scan can exceed default when images are large or CDN adds latency. */
+const AI_DEVICE_SCAN_TIMEOUT_MS = 120000
 
 function validateUrlConfiguration() {
   if (!import.meta.env.DEV) {
-    const isValid = (value) => /^https?:\/\//.test(value)
-    if (!isValid(API_URL)) {
-      throw new Error(`Invalid VITE_API_URL: "${API_URL}". Expected absolute http(s) URL.`)
+    const isValid = (value) => /^https?:\/\//.test(value) || value.startsWith('/')
+    if (!isValid(DASHBOARD_API_BASE)) {
+      throw new Error(`Invalid VITE_API_URL: "${DASHBOARD_API_BASE}". Use http(s)://… or a path like /api.`)
     }
-    if (!isValid(AI_ANALYZE_URL)) {
-      throw new Error(`Invalid VITE_AI_ANALYZE_URL: "${AI_ANALYZE_URL}". Expected absolute http(s) URL.`)
+    if (!isValid(AI_API_BASE)) {
+      throw new Error(`Invalid VITE_AI_ANALYZE_URL: "${AI_API_BASE}". Use http(s)://… or a path like /api/ai.`)
     }
   }
 }
 
 validateUrlConfiguration()
+
+/**
+ * FastAPI may return `detail` as a string, or (422 validation) an array of { loc, msg }.
+ * Nginx/CloudFront often return HTML with no JSON body — give actionable hints by status.
+ */
+function formatFastApiErrorDetail(data, response) {
+  const status = response.status
+  const detail = data?.detail
+  // FastAPI default 404 is { "detail": "Not Found" } — unhelpful when /api was not proxied (e.g. old vite preview).
+  if (status === 404) {
+    const d = typeof detail === 'string' ? detail.trim() : ''
+    if (d === 'Not Found' || d === '') {
+      return 'Dashboard API route not found (404). Check VITE_API_URL in frontend/.env matches FastAPI (e.g. http://127.0.0.1:8000) and POST /ai-device-scan exists.'
+    }
+    if (d) return d
+  }
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const parts = detail.map((item) => {
+      if (item && typeof item.msg === 'string') {
+        const loc = Array.isArray(item.loc) ? item.loc.filter(Boolean).join(' → ') : ''
+        return loc ? `${loc}: ${item.msg}` : item.msg
+      }
+      try {
+        return JSON.stringify(item)
+      } catch {
+        return String(item)
+      }
+    })
+    const joined = parts.filter(Boolean).join('; ')
+    if (joined) return joined
+  }
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    try {
+      return JSON.stringify(detail)
+    } catch {
+      /* fall through */
+    }
+  }
+  const ct = typeof response.headers?.get === 'function' ? response.headers.get('content-type') || '' : ''
+  if (status === 413) {
+    return 'Upload rejected: body too large (413). Try smaller or fewer images, or raise the server upload limit (e.g. nginx client_max_body_size).'
+  }
+  if (status === 401) return 'Sign in expired or invalid. Please sign in again.'
+  if (status === 403) return 'Access forbidden (403).'
+  if (status === 502 || status === 503) {
+    return 'Bad gateway (502/503). The API or a proxy upstream may be down — try again shortly.'
+  }
+  if (status === 504) {
+    return 'Gateway timeout (504). Try fewer/smaller images or increase proxy/CloudFront timeouts.'
+  }
+  if (status >= 500 && ct.includes('text/html')) {
+    return `Server error (${status}) — received HTML instead of JSON (often a proxy/nginx error page).`
+  }
+  return ''
+}
 
 function buildNetworkError(serviceName, baseUrl, originalError) {
   const details = originalError?.message ? ` (${originalError.message})` : ''
@@ -67,11 +148,13 @@ function toLegacyAiResponse(data) {
 }
 
 async function request(path, options = {}) {
-  const response = await fetchWithTimeout(`${API_URL}${path}`, options, REQUEST_TIMEOUT_MS, 'dashboard API')
+  const url = dashboardUrl(path)
+  const response = await fetchWithTimeout(url, options, REQUEST_TIMEOUT_MS, 'dashboard API')
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
-    throw new Error(data.detail || 'Request failed')
+    logDashboardApiFailure(`${options.method || 'GET'} ${path}`, response, data)
+    throw new Error(formatFastApiErrorDetail(data, response) || `Request failed (HTTP ${response.status})`)
   }
 
   return data
@@ -131,26 +214,38 @@ export async function aiDeviceScan(token, payload) {
   formData.append('body_damage', String(Boolean(payload.body_damage)))
   formData.append('water_damage', String(Boolean(payload.water_damage)))
 
+  const url = dashboardUrl('/ai-device-scan')
   const response = await fetchWithTimeout(
-    `${API_URL}/ai-device-scan`,
+    url,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
     },
-    REQUEST_TIMEOUT_MS,
+    AI_DEVICE_SCAN_TIMEOUT_MS,
     'dashboard API'
   )
-  const data = await response.json().catch(() => ({}))
+  let data = {}
+  try {
+    data = await response.json()
+  } catch {
+    data = {}
+  }
   if (!response.ok) {
-    throw new Error(data.detail || 'AI device scan failed')
+    logDashboardApiFailure('POST /ai-device-scan', response, data)
+    throw new Error(
+      formatFastApiErrorDetail(data, response) || `AI device scan failed (HTTP ${response.status})`,
+    )
+  }
+  if (import.meta.env.DEV) {
+    console.info('[ai-device-scan] OK', { match: data?.match_score, success: data?.success })
   }
   return data
 }
 
 export async function chatAssistant(token, message) {
   const response = await fetchWithTimeout(
-    `${API_URL}/chat`,
+    dashboardUrl('/chat'),
     {
       method: 'POST',
       headers: {
@@ -164,20 +259,22 @@ export async function chatAssistant(token, message) {
   )
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error(data.detail || 'Assistant request failed')
+    logDashboardApiFailure('POST /chat', response, data)
+    throw new Error(formatFastApiErrorDetail(data, response) || `Assistant request failed (HTTP ${response.status})`)
   }
   return data
 }
 
 export async function ensureDashboardApiReady() {
-  const response = await fetchWithTimeout(`${API_URL}/health`, {}, 10000, 'dashboard API')
+  const response = await fetchWithTimeout(dashboardUrl('/health'), {}, 10000, 'dashboard API')
   if (!response.ok) {
+    logDashboardApiFailure('GET /health', response, {})
     throw new Error(`Dashboard API health check failed with status ${response.status}`)
   }
 }
 
 export async function ensureAiApiReady() {
-  const response = await fetchWithTimeout(`${AI_ANALYZE_URL}/health/full`, {}, 20000, 'AI API')
+  const response = await fetchWithTimeout(aiUrl('/health/full'), {}, 20000, 'AI API')
   if (!response.ok) {
     throw new Error(`AI API health check failed with status ${response.status}`)
   }
@@ -196,7 +293,7 @@ export async function analyzeHybridImage(file, confThreshold = 0.25) {
 
   // New full-stack path: /explain combines YOLO detection + VLM explanation.
   const explainResponse = await fetchWithTimeout(
-    `${AI_ANALYZE_URL}/explain?conf_threshold=${confThreshold}`,
+    aiUrl(`/explain?conf_threshold=${confThreshold}`),
     {
       method: 'POST',
       body: formData,
@@ -209,7 +306,7 @@ export async function analyzeHybridImage(file, confThreshold = 0.25) {
   if (!explainResponse.ok) {
     // Backward-compatible fallback for legacy backend deployments.
     const fallbackResponse = await fetchWithTimeout(
-      `${AI_ANALYZE_URL}/analyze?conf_threshold=${confThreshold}`,
+      aiUrl(`/analyze?conf_threshold=${confThreshold}`),
       {
         method: 'POST',
         body: formData,
@@ -219,7 +316,8 @@ export async function analyzeHybridImage(file, confThreshold = 0.25) {
     )
     const fallbackData = await fallbackResponse.json().catch(() => ({}))
     if (!fallbackResponse.ok) {
-      throw new Error(fallbackData.detail || explainData.detail || 'Hybrid AI analysis failed')
+      const merged = { detail: fallbackData.detail ?? explainData.detail }
+      throw new Error(formatFastApiErrorDetail(merged, fallbackResponse) || 'Hybrid AI analysis failed')
     }
     return fallbackData
   }
@@ -259,7 +357,7 @@ export async function analyzeBatchImages(files, confThreshold = 0.25) {
   }
 
   const response = await fetchWithTimeout(
-    `${AI_ANALYZE_URL}/analyze-batch?conf_threshold=${confThreshold}`,
+    aiUrl(`/analyze-batch?conf_threshold=${confThreshold}`),
     {
       method: 'POST',
       body: formData,
@@ -271,7 +369,7 @@ export async function analyzeBatchImages(files, confThreshold = 0.25) {
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
-    throw new Error(data.detail || 'Batch analysis failed')
+    throw new Error(formatFastApiErrorDetail(data, response) || `Batch analysis failed (HTTP ${response.status})`)
   }
 
   return data
@@ -282,7 +380,7 @@ export async function analyzeBatchImages(files, confThreshold = 0.25) {
  * @returns {Promise} Health status
  */
 export async function getApiHealth() {
-  const response = await fetchWithTimeout(`${AI_ANALYZE_URL}/health`, {}, 10000, 'AI API')
+  const response = await fetchWithTimeout(aiUrl('/health'), {}, 10000, 'AI API')
   const data = await response.json().catch(() => ({}))
   return data
 }
@@ -301,14 +399,14 @@ export async function trainYolo(dataYamlPath, options = {}) {
     batch_size: options.batch_size || 8,
   })
 
-  const response = await fetch(`${AI_ANALYZE_URL}/train-yolo?${params}`, {
+  const response = await fetch(aiUrl(`/train-yolo?${params}`), {
     method: 'POST',
   })
 
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
-    throw new Error(data.detail || 'Training failed')
+    throw new Error(formatFastApiErrorDetail(data, response) || `Training failed (HTTP ${response.status})`)
   }
 
   return data
@@ -322,14 +420,14 @@ export async function trainYolo(dataYamlPath, options = {}) {
 export async function loadCustomModel(modelPath) {
   const params = new URLSearchParams({ model_path: modelPath })
 
-  const response = await fetch(`${AI_ANALYZE_URL}/load-model?${params}`, {
+  const response = await fetch(aiUrl(`/load-model?${params}`), {
     method: 'POST',
   })
 
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
-    throw new Error(data.detail || 'Model loading failed')
+    throw new Error(formatFastApiErrorDetail(data, response) || `Model loading failed (HTTP ${response.status})`)
   }
 
   return data

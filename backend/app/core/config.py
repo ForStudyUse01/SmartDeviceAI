@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     jwt_expiration_days: int = 7
     cors_origin: str = Field(default="http://127.0.0.1:5173", alias="CORS_ORIGIN")
     cors_origins: str = Field(
-        default="http://127.0.0.1:5173,http://localhost:5173,http://192.168.1.10:5173",
+        default=(
+            "http://127.0.0.1:5173,http://localhost:5173,"
+            "http://127.0.0.1:4173,http://localhost:4173,"
+            "http://192.168.1.10:5173"
+        ),
         alias="CORS_ORIGINS",
     )
 

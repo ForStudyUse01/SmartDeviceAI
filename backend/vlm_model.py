@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
 import torch
 from PIL import Image, ImageStat
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
@@ -23,13 +24,13 @@ logger = logging.getLogger(__name__)
 # Strict prompt for structured condition + damage outputs.
 E_WASTE_PROMPT = """Analyze the uploaded device image.
 Classify:
-1. Overall condition: Good, Average, or Poor
+1. Overall condition: Good, Average, or Bad
 2. Is the device broken? Answer: Broken or Not Broken
 
 Rules:
 - Good = no visible damage, clean
 - Average = minor scratches or wear
-- Poor = heavy damage, cracks, missing parts
+- Bad = heavy damage, cracks, missing parts
 - Broken = visible cracks, shattered screen, major defects
 
 Return ONLY JSON:
@@ -64,11 +65,11 @@ class VLMAnalyzer:
             model_name: HuggingFace model identifier
         """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_name = model_name
+        self.model_name = os.getenv("VLM_FINETUNED_PATH", model_name)
         self.processor = None
         self.model = None
-        # Keep fast local analysis on by default; opt into BLIP-2 only when explicitly requested.
-        self.enable_model = os.getenv("ENABLE_HEAVY_VLM", "0").lower() in {"1", "true", "yes", "on"}
+        # Prefer heavy VLM by default for accuracy; allow opt-out only when needed.
+        self.enable_model = os.getenv("ENABLE_HEAVY_VLM", "1").lower() in {"1", "true", "yes", "on"}
 
         if self.enable_model:
             self._load_model()
@@ -177,7 +178,7 @@ class VLMAnalyzer:
             data = json.loads(response_text)
             condition_label = self._normalize_condition_label(str(data.get("condition", "Average")))
             damage = self._normalize_damage(str(data.get("damage", "Not Broken")))
-            working_condition = "damaged" if condition_label == "Poor" or damage == "Broken" else "working"
+            working_condition = "damaged" if condition_label == "Bad" or damage == "Broken" else "working"
             return VLMResult(
                 object_name=str(data.get("object", "electronic component")).strip(),
                 condition=working_condition,
@@ -197,20 +198,20 @@ class VLMAnalyzer:
             return self._fallback_analysis(b"")
 
     def _normalize_condition_label(self, condition: str) -> str:
-        """Normalize condition to Good/Average/Poor."""
+        """Normalize condition to Good/Average/Bad for UI consistency."""
         condition = condition.lower().strip()
         mapping = {
             "good": "Good",
             "excellent": "Good",
             "average": "Average",
             "fair": "Average",
-            "poor": "Poor",
-            "bad": "Poor",
+            "poor": "Bad",
+            "bad": "Bad",
         }
         if condition in mapping:
             return mapping[condition]
-        if "poor" in condition or "broken" in condition or "major" in condition:
-            return "Poor"
+        if "poor" in condition or "bad" in condition or "broken" in condition or "major" in condition:
+            return "Bad"
         if "average" in condition or "minor" in condition or "wear" in condition:
             return "Average"
         if "good" in condition or "clean" in condition:
@@ -256,20 +257,66 @@ class VLMAnalyzer:
         """
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert("L")
-            brightness = ImageStat.Stat(image).mean[0]
-        except Exception:
-            brightness = 128
+            arr = np.asarray(image, dtype=np.uint8)
+            brightness = float(arr.mean())
+            contrast = float(arr.std())
 
-        return VLMResult(
-            object_name="electronic component",
-            condition="working",
-            condition_label="Average",
-            damage="Not Broken",
-            confidence=0.55 if brightness >= 100 else 0.45,
-            suggestion="Fallback VLM used; defaulting to Average and Not Broken.",
-            eco_score=70 if brightness >= 100 else 60,
-            damage_indicators=[],
-        )
+            # Crack-like cues: high-frequency edges + dark pixels + strong local gradients.
+            gx = np.diff(arr.astype(np.float32), axis=1, prepend=arr[:, :1])
+            gy = np.diff(arr.astype(np.float32), axis=0, prepend=arr[:1, :])
+            grad = np.sqrt(gx * gx + gy * gy)
+            strong_edge_ratio = float((grad > 45).mean())
+            dark_ratio = float((arr < 40).mean())
+            bright_ratio = float((arr > 220).mean())
+
+            damage_score = (strong_edge_ratio * 0.55) + (dark_ratio * 0.30) + (bright_ratio * 0.15)
+            is_broken = damage_score > 0.24 or (contrast > 62 and dark_ratio > 0.08)
+
+            if is_broken:
+                damage = "Broken"
+                condition_label = "Bad"
+                condition = "damaged"
+                confidence = max(0.58, min(0.82, 0.55 + damage_score))
+                suggestion = (
+                    "Fallback VLM detected heavy visual damage cues (crack/edge density contrast). "
+                    "Treat as Broken until heavy model confirmation."
+                )
+                indicators = ["cracks"] if strong_edge_ratio > 0.22 else ["broken parts"]
+                eco_score = 45
+            else:
+                damage = "Not Broken"
+                if brightness > 145 and contrast < 48:
+                    condition_label = "Good"
+                    eco_score = 78
+                else:
+                    condition_label = "Average"
+                    eco_score = 64
+                condition = "working"
+                confidence = 0.56 if condition_label == "Good" else 0.52
+                suggestion = "Fallback VLM used; no strong broken-device cues detected."
+                indicators = []
+
+            return VLMResult(
+                object_name="electronic component",
+                condition=condition,
+                condition_label=condition_label,
+                damage=damage,
+                confidence=confidence,
+                suggestion=suggestion,
+                eco_score=eco_score,
+                damage_indicators=indicators,
+            )
+        except Exception:
+            return VLMResult(
+                object_name="electronic component",
+                condition="damaged",
+                condition_label="Bad",
+                damage="Broken",
+                confidence=0.45,
+                suggestion="Fallback VLM failed to parse image; marking as potentially Broken for safety.",
+                eco_score=50,
+                damage_indicators=["broken parts"],
+            )
 
 
 # Create singleton instance

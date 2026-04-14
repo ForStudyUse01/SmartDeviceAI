@@ -7,6 +7,8 @@ import { AssistantPage } from './pages/AssistantPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DevicesPage } from './pages/DevicesPage'
 import { LoginPage } from './pages/LoginPage'
+import { ModelComparisonPage } from './pages/ModelComparisonPage'
+import { PriceEstimatePage } from './pages/PriceEstimatePage'
 import { ScanPage } from './pages/ScanPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SignupPage } from './pages/SignupPage'
@@ -29,12 +31,14 @@ function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        <Route path="/price-estimate" element={<PriceEstimatePage />} />
         <Route element={<ProtectedWorkspace />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/my-devices" element={<DevicesPage />} />
           <Route path="/my-devices/:id" element={<DevicesPage />} />
           <Route path="/assistant" element={<AssistantPage />} />
+          <Route path="/model-comparison" element={<ModelComparisonPage />} />
           <Route path="/hybrid" element={<Navigate to="/scan" replace />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/devices" element={<Navigate to="/my-devices" replace />} />

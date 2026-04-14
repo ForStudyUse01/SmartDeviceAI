@@ -1,0 +1,25 @@
+{
+  "linear_regression": {
+    "r2": 0.8383387383707545,
+    "mae": 4661.0423463072375,
+    "rmse": 6375.168390897728,
+    "evaluation_points": 240
+  },
+  "random_forest": {
+    "r2": 0.9463864978897455,
+    "mae": 2464.70775,
+    "rmse": 3671.349814849551,
+    "evaluation_points": 240
+  },
+  "kmeans": {
+    "r2": 0.4267651357260466,
+    "mae": 9390.353068353106,
+    "rmse": 12004.801319506561,
+    "evaluation_points": 240
+  },
+  "n_clusters": 8,
+  "test_size": 0.2,
+  "train_size": 960,
+  "test_size_actual": 240,
+  "dataset_rows": 1200
+}

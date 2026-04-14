@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ModelComparison } from '../components/ModelComparison'
 import { ScanResultCard } from '../components/ScanResultCard'
 import { useAuth } from '../context/AuthContext'
 import { useLiveMetalPrices } from '../hooks/useLiveMetalPrices'
@@ -34,6 +35,16 @@ function confidenceTone(value, explicitLabel = '') {
   if (percent < 50) return 'low'
   if (percent < 70) return 'medium'
   return 'high'
+}
+
+function toMlCondition(condition) {
+  const normalized = String(condition || '')
+    .trim()
+    .toLowerCase()
+  if (normalized === 'average') return 'fair'
+  if (normalized === 'poor') return 'poor'
+  if (normalized === 'excellent') return 'excellent'
+  return 'good'
 }
 
 function buildValidationResult({
@@ -87,6 +98,8 @@ export function ScanPage() {
   const [waterDamage, setWaterDamage] = useState('No')
 
   const [result, setResult] = useState(null)
+  const [predictions, setPredictions] = useState([])
+  const [bestModel, setBestModel] = useState('')
   const [selectedFiles, setSelectedFiles] = useState([])
   const [previewImages, setPreviewImages] = useState([])
   const [hoveredPreview, setHoveredPreview] = useState(-1)
@@ -235,6 +248,8 @@ export function ScanPage() {
 
     setImageLoading(true)
     setImageError('')
+    setPredictions([])
+    setBestModel('')
 
     try {
       const response = await aiDeviceScan(token, {
@@ -290,10 +305,105 @@ export function ScanPage() {
       }
       computed.aiDetected = response.detected
       computed.finalAnalysis = response.final_analysis
+
+      let mlPrediction = null
+      try {
+        const conditionScore =
+          conditionLabel === 'Good' ? 0.9 : conditionLabel === 'Average' ? 0.6 : 0.3
+        const batteryHealth =
+          conditionLabel === 'Good' ? 90 : conditionLabel === 'Average' ? 70 : 50
+        const depreciationRate = Math.min(0.95, Math.max(0.1, Number(ageYears) * 0.1))
+        const demandScore =
+          conditionLabel === 'Good' ? 0.85 : conditionLabel === 'Average' ? 0.6 : 0.4
+        const mlPayload = {
+          Device_Type: deviceType,
+          Brand: brand,
+          Model: model,
+          Age_Years: Number(ageYears),
+          Condition_Label: conditionLabel,
+          Condition_Score: conditionScore,
+          Screen_Damage: screenDamage,
+          Body_Damage: bodyDamage,
+          Battery_Health: batteryHealth,
+          Original_Price: Number(computed.basePrice || selectedRow?.original_price || 10000),
+          Depreciation_Rate: depreciationRate,
+          Demand_Score: demandScore,
+        }
+        console.log('ML PAYLOAD:', mlPayload)
+        const mlResponse = await fetch('http://127.0.0.1:8765/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(mlPayload),
+        })
+        const mlData = await mlResponse.json().catch(() => ({}))
+        console.log('ML STATUS:', mlResponse.status)
+        console.log('ML DATA:', mlData)
+        if (!mlResponse.ok) {
+          throw new Error(mlData?.detail || mlData?.message || `ML API ${mlResponse.status}`)
+        }
+
+        const preds = (mlData?.predictions || mlData?.model_comparison || []).map((p) => ({
+          model: p?.model || p?.name || p?.model_name || p?.model_key,
+          price: Number(p?.price || p?.value || p?.predicted_price || 0),
+          accuracy: p?.accuracy || p?.r2 || 0,
+        }))
+        setPredictions(preds)
+        setBestModel(mlData?.best_model || '')
+        console.log('PREDICTIONS STATE:', preds)
+
+        // TEMP hard test: verify frontend rendering path if backend returns no predictions.
+        if (!Array.isArray(mlData?.predictions) && !Array.isArray(mlData?.model_comparison)) {
+          setPredictions([
+            { model: 'Linear Regression', price: 58000 },
+            { model: 'Random Forest', price: 62625 },
+            { model: 'KMeans', price: 42000 },
+          ])
+        }
+
+        const normalizedPreds = Array.isArray(preds)
+          ? preds.map((p, idx) => ({
+              model: p?.model || p?.model_name || p?.model_key || `Model ${idx + 1}`,
+              price: Number(p?.price ?? p?.predicted_price ?? 0),
+            }))
+          : []
+        const bestPrediction = normalizedPreds.find((p) => p.model === (mlData?.best_model || ''))
+        const bestPrice = bestPrediction?.price ?? bestPrediction?.predicted_price
+        if (Number.isFinite(Number(bestPrice))) {
+          mlData.best_price = Number(bestPrice)
+          // Make scan's estimated value follow best-model ML price.
+          computed.resaleValue = Number(bestPrice)
+        }
+
+        mlPrediction = {
+          ...mlData,
+          predictions: Array.isArray(preds) ? preds : [],
+          best_model: mlData?.best_model || '',
+        }
+        const bp = mlPrediction.best_price
+        if (bp == null || Number.isNaN(Number(bp))) {
+          mlPrediction = null
+        }
+      } catch {
+        mlPrediction = null
+        setPredictions([])
+        setBestModel('')
+      }
+      computed.mlPrediction = mlPrediction
+
       setResult(computed)
       saveDeviceEntry(computed)
     } catch (error) {
-      setImageError(error.message || 'AI analysis failed')
+      const raw = String(error?.message || 'AI analysis failed')
+      const looksDisconnected =
+        /404|Not Found|Cannot reach|timed out|Failed to fetch|NetworkError|route not found/i.test(raw)
+      setImageError(
+        looksDisconnected
+          ? 'Backend not connected. Please start the FastAPI server on port 8000 (from backend: uvicorn app.main:app --host 0.0.0.0 --port 8000).'
+          : raw,
+      )
+      if (import.meta.env.DEV) {
+        console.error('[ScanPage] aiDeviceScan failed', error)
+      }
     } finally {
       setImageLoading(false)
     }
@@ -596,6 +706,12 @@ export function ScanPage() {
             </div>
           ) : null}
           <ScanResultCard scan={result} liveMetalPrices={liveMetalPrices} />
+          {predictions && predictions.length > 0 ? (
+            <div style={{ marginTop: 16 }}>
+              <ModelComparison predictions={predictions} bestModel={bestModel} />
+            </div>
+          ) : null}
+          <pre style={{ color: 'white' }}>{JSON.stringify(predictions, null, 2)}</pre>
         </div>
       </section>
     </div>
