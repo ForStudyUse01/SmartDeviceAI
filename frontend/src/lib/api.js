@@ -26,8 +26,8 @@ function logDashboardApiFailure(context, response, data) {
   })
 }
 const REQUEST_TIMEOUT_MS = 25000
-/** Multipart AI scan can exceed default when images are large or CDN adds latency. */
-const AI_DEVICE_SCAN_TIMEOUT_MS = 120000
+/** Multipart AI scan: first BLIP-2 download/load + inference can take several minutes locally. */
+const AI_DEVICE_SCAN_TIMEOUT_MS = 360000
 
 function validateUrlConfiguration() {
   if (!import.meta.env.DEV) {

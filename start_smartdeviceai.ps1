@@ -9,6 +9,11 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backendDir = Join-Path $root "backend"
 $frontendDir = Join-Path $root "frontend"
+$venvPython = Join-Path $backendDir ".venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    Write-Host "ERROR: Missing $venvPython. Run scripts/start-dashboard.ps1 once to create the venv, or: cd backend; python -m venv .venv; .\.venv\Scripts\pip install -r requirements.txt"
+    exit 1
+}
 
 Write-Host "Starting SmartDeviceAI full stack..."
 
@@ -16,14 +21,14 @@ Write-Host "Starting SmartDeviceAI full stack..."
 Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-Command",
-    "Set-Location '$backendDir'; uvicorn app.main:app --host 0.0.0.0 --port $DashboardApiPort"
+    "Set-Location '$backendDir'; & '$venvPython' -m uvicorn app.main:app --host 0.0.0.0 --port $DashboardApiPort"
 ) | Out-Null
 
 # AI inference API (backend/app.py)
 Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-Command",
-    "Set-Location '$backendDir'; python app.py"
+    "Set-Location '$backendDir'; `$env:PORT='$AiApiPort'; & '$venvPython' app.py"
 ) | Out-Null
 
 # Frontend (Vite)
@@ -54,7 +59,7 @@ function Wait-ForHttp {
 }
 
 $dashboardReady = Wait-ForHttp -Url "http://localhost:$DashboardApiPort/health"
-$aiReady = Wait-ForHttp -Url "http://localhost:$AiApiPort/health/full"
+$aiReady = Wait-ForHttp -Url "http://localhost:$AiApiPort/health"
 $frontendReady = Wait-ForHttp -Url "http://localhost:$FrontendPort"
 
 Write-Host "Dashboard API ready: $dashboardReady"

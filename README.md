@@ -1,39 +1,72 @@
 # SmartDeviceAI
 
-Full-stack SmartDeviceAI application with React (Vite), FastAPI, Motor, MongoDB, and startup-loaded ML.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react&logoColor=black)
+![YOLO](https://img.shields.io/badge/YOLO-Detection-7D3C98)
+![Status](https://img.shields.io/badge/Status-Project%20Ready-success)
 
-## Runtime contract (important)
+SmartDeviceAI is an end-to-end AI-powered device analysis platform for e-waste and resale workflows.  
+It combines computer vision + language intelligence to detect devices, validate user input, and classify condition as **Good / Average / Poor**.
 
-SmartDeviceAI uses three local services in development:
+## Key Features
 
-- Frontend (Vite): `http://localhost:5173`
-- Dashboard/Auth API: `http://127.0.0.1:8000` (`backend/app/main.py`)
-- AI Inference API (YOLO + VLM): `http://127.0.0.1:5000` (`backend/app.py`)
+- **YOLO Device Detection** with bounding boxes and confidence.
+- **Manual vs AI Validation** gate before final approval.
+- **VLM Condition + Damage Analysis** from cropped/boxed device regions.
+- **Condition Classification** into showcase-ready outcomes:
+  - `Good`
+  - `Average`
+  - `Poor`
+- **Full-stack UI + API flow** for practical live demos and viva.
 
-Do **not** run `uvicorn app:app` from `backend`; that conflicts with the `backend/app/` package.
+## Pipeline Flow
 
-Use:
+1. **YOLO Detection**
+   - Detects device type from uploaded image(s).
+   - Produces bounding boxes and confidence.
+2. **Device Type Validation**
+   - Compares YOLO device type with manual form input.
+   - If mismatch: returns  
+     **"AI scan and Manual input do not match"**.
+3. **VLM Analysis**
+   - Runs on boxed/cropped device image.
+   - Evaluates condition and damage cues.
+4. **Condition Classification**
+   - Heavy damage -> **Poor**
+   - Slight damage -> **Average**
+   - No damage -> **Good**
 
-- `uvicorn app.main:app --reload --port 8000` for dashboard/auth API
-- `python app.py` for AI inference API
+## Tech Stack
 
-## One-command startup (Windows PowerShell)
+- **ML/CV**: YOLO, VLM (BLIP-family based analysis path)
+- **Backend**: FastAPI, Python
+- **Frontend**: React + Vite
+- **Data/Storage**: MongoDB + local support modules
 
-```powershell
-.\start_smartdeviceai.ps1
+## Project Structure
+
+```text
+SmartDeviceAI/
+├─ backend/
+│  ├─ app/                 # Dashboard/auth APIs and routes
+│  ├─ services/            # AI service layer
+│  ├─ models/              # Backend model assets/config
+│  ├─ app.py               # AI inference API (port 5000)
+│  ├─ pipeline.py          # YOLO -> Validation -> VLM flow
+│  └─ requirements.txt
+├─ frontend/
+│  ├─ src/                 # React application
+│  ├─ public/              # Static assets
+│  └─ package.json
+├─ models/                 # Root-level model artifacts
+├─ scripts/                # Startup scripts
+└─ README.md
 ```
 
-This starts both backends + frontend, waits for health checks, and opens the frontend in your browser.
+## Quick Setup
 
-## Frontend (manual)
-
-```bash
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-## Dashboard/Auth backend (manual)
+### 1) Backend (Dashboard API)
 
 ```bash
 cd backend
@@ -43,48 +76,29 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## AI inference backend (manual)
-
-This backend hosts YOLO + VLM endpoints (`/detect`, `/explain`, `/analyze`, `/analyze-batch`).
-
-Files:
-
-- `backend/app.py`
-- `backend/app/routes/ai_inference.py`
-- `backend/services/ai_service.py`
-- `backend/database/sqlite_store.py`
-- `backend/yolo_model.py`
-- `backend/vlm_analysis.py`
-- `backend/pricing.py`
-- `backend/utils.py`
-
-Run it locally:
+### 2) AI Inference API
 
 ```bash
 cd backend
-python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
 python app.py
 ```
 
-Analyze endpoint:
+### 3) Frontend
 
 ```bash
-POST http://127.0.0.1:5000/analyze
+cd frontend
+npm install
+npm run dev
 ```
 
-Form fields:
+## Example Output
 
-- `device_type`
-- `model`
-- `condition`
-- `age`
-- `images` (2 to 4 files)
+- **Device Type**: `laptop`
+- **Match Status**: `Match`
+- **Condition**: `Poor` (or `Average` / `Good`)
+- **Damage Signal**: `Broken` or `Not Broken`
 
-## Environment
+---
 
-- Backend defaults expect local MongoDB at `mongodb://127.0.0.1:27017`
-- Copy `backend/.env.example` to `backend/.env` to override defaults
-- Copy `frontend/.env.example` to `frontend/.env` for custom backend targets (used by Vite proxy in dev)
-- Set `OPENAI_API_KEY` before using the Flask VLM analysis route
+Built for practical demonstrations, robust validation behavior, and polished project showcase delivery.

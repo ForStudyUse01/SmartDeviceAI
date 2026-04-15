@@ -1,11 +1,10 @@
-import os
-from difflib import SequenceMatcher
 import logging
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
+from app.core.config import settings
 from app.core.database import get_database
 from app.core.security import get_current_token
 from app.ml.predict import predict_scan
@@ -13,9 +12,14 @@ from app.models.scan import ScanInDB, ScanResponse
 from app.schemas.scan import RecentScansResponse
 
 router = APIRouter(tags=["scan"])
-AI_BACKEND_URL = os.getenv("AI_BACKEND_URL", "http://127.0.0.1:5000")
 logger = logging.getLogger(__name__)
-ALLOWED_CLASSES = {"mobile", "laptop", "tablet", "powerbank"}
+
+
+def _ai_backend_base_url() -> str:
+    return str(settings.ai_backend_url or "http://127.0.0.1:5000").strip().rstrip("/")
+
+
+ALLOWED_CLASSES = {"mobile", "laptop", "tablet", "powerbank", "electronic device"}
 
 
 def _offline_fallback_detected(normalized_user_device: str) -> dict[str, Any]:
@@ -39,6 +43,7 @@ def _offline_fallback_detected(normalized_user_device: str) -> dict[str, Any]:
         ],
         "confidence": 0.55,
         "confidence_label": "medium",
+        "damage_confidence": 0.5,
     }
 
 
@@ -52,6 +57,7 @@ def _offline_fallback_final_analysis(image_name: str) -> dict[str, Any]:
                 "yolo_confidence": 55,
                 "vlm_condition": "Average",
                 "vlm_damage": "Not Broken",
+                "damage_confidence": 0.5,
                 "condition": "partially working",
                 "suggestion": "Offline mode — connect the AI backend for full image verification.",
             }
@@ -156,6 +162,7 @@ def _extract_detected_summary(ai_result: dict[str, Any]) -> dict[str, Any]:
         "detected_objects": detected_objects,
         "confidence": float(conf),
         "confidence_label": _confidence_label(conf),
+        "damage_confidence": float(primary.get("damage_confidence", conf)),
     }
 
 
@@ -193,77 +200,39 @@ def _extract_detected_summary_from_batch(batch_result: dict[str, Any]) -> dict[s
         "detected_objects": filtered,
         "confidence": float(conf),
         "confidence_label": _confidence_label(conf),
+        "damage_confidence": float(primary.get("damage_confidence", conf)),
     }
+
+
+def _extract_detected_summary_from_analysis(final_analysis: dict[str, Any]) -> dict[str, Any]:
+    """Build detected summary directly from /analyze or /analyze-batch payloads."""
+    if isinstance(final_analysis.get("results"), list):
+        return _extract_detected_summary_from_batch(final_analysis)
+    return _extract_detected_summary(
+        {"detected_objects": final_analysis.get("detected_objects", [])}
+    )
+
+
+def _is_timeout_fallback(final_analysis: dict[str, Any]) -> bool:
+    """
+    Detect AI timeout fallback payloads from backend/app.py.
+    These are not reliable enough for strict device/condition verification.
+    """
+    message = str(final_analysis.get("error_message", "")).lower()
+    if "timed out" in message or "fallback" in message:
+        return True
+    if isinstance(final_analysis.get("results"), list):
+        for item in final_analysis["results"]:
+            item_message = str(item.get("error_message", "")).lower()
+            if "timed out" in item_message or "fallback" in item_message:
+                return True
+    return False
 
 
 def _normalized_confidence(value: float) -> float:
     if value > 1.0:
         return max(0.0, min(1.0, value / 100.0))
     return max(0.0, min(1.0, value))
-
-
-def _similarity(left: str, right: str) -> float:
-    return SequenceMatcher(None, _normalize_device(left), _normalize_device(right)).ratio()
-
-
-def _collect_detection_text(detected_objects: list[dict[str, Any]]) -> str:
-    chunks: list[str] = []
-    for obj in detected_objects:
-        chunks.extend(
-            [
-                str(obj.get("yolo_label", "")),
-                str(obj.get("vlm_object", "")),
-                str(obj.get("condition", "")),
-                str(obj.get("details", "")),
-                str(obj.get("suggestion", "")),
-            ]
-        )
-    return " ".join(chunks).lower()
-
-
-def _has_indicator(detected_objects: list[dict[str, Any]], keywords: tuple[str, ...]) -> bool:
-    text_blob = _collect_detection_text(detected_objects)
-    return any(keyword in text_blob for keyword in keywords)
-
-
-def _validate_user_vs_ai(
-    user_input: dict[str, Any],
-    detected: dict[str, Any],
-) -> str | None:
-    confidence = _normalized_confidence(float(detected.get("confidence", 0.0)))
-    if confidence < 0.5:
-        return "Low confidence - try clearer image"
-
-    user_device = _normalize_device(user_input["device_type"])
-    ai_device = _normalize_device(detected["detected_device_type"])
-    device_similarity = _similarity(user_device, ai_device)
-    if device_similarity < 0.7:
-        return "User input does not match AI-detected device"
-
-    detected_objects = detected.get("detected_objects", [])
-    screen_issue_detected = _has_indicator(
-        detected_objects, ("crack", "cracked_screen", "screen damage", "display damage", "broken screen")
-    )
-    body_issue_detected = _has_indicator(
-        detected_objects, ("body defect", "dent", "frame damage", "broken body", "scratch")
-    )
-    water_issue_detected = _has_indicator(
-        detected_objects, ("water", "corrosion", "rust", "liquid damage", "oxidation")
-    )
-
-    mismatch_points = 0
-    if bool(user_input["screen_damage"]) != bool(screen_issue_detected):
-        mismatch_points += 1
-    if bool(user_input["body_damage"]) != bool(body_issue_detected):
-        mismatch_points += 1
-    if bool(user_input["water_damage"]) != bool(water_issue_detected):
-        mismatch_points += 1
-
-    # Major mismatch policy: reject if multiple independent checks conflict.
-    if mismatch_points >= 2:
-        return "User input does not match AI-detected device"
-
-    return None
 
 
 def _normalize_vlm_condition(value: str) -> str:
@@ -292,24 +261,71 @@ def _normalize_vlm_damage(value: str) -> str:
     return "Not Broken"
 
 
-def _extract_vlm_summary(final_analysis: dict[str, Any]) -> dict[str, str]:
-    first: dict[str, Any] | None = None
-    if isinstance(final_analysis.get("detected_objects"), list) and final_analysis.get("detected_objects"):
-        first = final_analysis["detected_objects"][0]
-    elif isinstance(final_analysis.get("results"), list):
+def _extract_vlm_summary(final_analysis: dict[str, Any]) -> dict[str, Any]:
+    objects: list[dict[str, Any]] = []
+    if isinstance(final_analysis.get("detected_objects"), list):
+        objects.extend(final_analysis.get("detected_objects", []))
+    if isinstance(final_analysis.get("results"), list):
         for item in final_analysis["results"]:
-            objects = item.get("detected_objects", [])
-            if objects:
-                first = objects[0]
-                break
+            batch_objects = item.get("detected_objects", [])
+            if isinstance(batch_objects, list):
+                objects.extend(batch_objects)
 
-    if not first:
-        return {"vlm_condition": "Average", "vlm_damage": "Not Broken"}
+    if not objects:
+        return {"vlm_condition": "Average", "vlm_damage": "Not Broken", "damage_confidence": 0.5}
+
+    def _condition_rank(value: str) -> int:
+        normalized = _normalize_vlm_condition(value)
+        if normalized == "Bad":
+            return 3
+        if normalized == "Average":
+            return 2
+        return 1
+
+    # Prefer the strongest damage signal across all uploaded images.
+    best_damage_obj = max(
+        objects,
+        key=lambda obj: _normalized_confidence(float(obj.get("damage_confidence", obj.get("yolo_confidence", 0.0)))),
+    )
+    any_broken = any(_normalize_vlm_damage(str(obj.get("vlm_damage", "Not Broken"))) == "Broken" for obj in objects)
+    worst_condition_obj = max(
+        objects,
+        key=lambda obj: _condition_rank(str(obj.get("vlm_condition", obj.get("condition", "Average")))),
+    )
+
+    combined_damage_conf = _normalized_confidence(
+        float(best_damage_obj.get("damage_confidence", best_damage_obj.get("yolo_confidence", 0.5)))
+    )
+    combined_condition = _normalize_vlm_condition(
+        str(worst_condition_obj.get("vlm_condition", worst_condition_obj.get("condition", "Average")))
+    )
+
+    if any_broken and combined_condition != "Bad":
+        combined_condition = "Bad"
 
     return {
-        "vlm_condition": _normalize_vlm_condition(str(first.get("vlm_condition", first.get("condition", "Average")))),
-        "vlm_damage": _normalize_vlm_damage(str(first.get("vlm_damage", "Not Broken"))),
+        "vlm_condition": combined_condition,
+        "vlm_damage": "Broken" if any_broken else _normalize_vlm_damage(str(best_damage_obj.get("vlm_damage", "Not Broken"))),
+        "damage_confidence": combined_damage_conf,
     }
+
+
+def _classify_condition(vlm_condition: str, vlm_damage: str, damage_confidence: float) -> str:
+    """
+    Final condition classification:
+    - heavily damaged -> Poor
+    - slightly damaged -> Average
+    - no damage -> Good
+    """
+    normalized_condition = _normalize_vlm_condition(vlm_condition)
+    normalized_damage = _normalize_vlm_damage(vlm_damage)
+    confidence = _normalized_confidence(float(damage_confidence))
+
+    if normalized_damage == "Broken" or normalized_condition == "Bad" or confidence >= 0.7:
+        return "Poor"
+    if normalized_condition == "Average" or confidence >= 0.35:
+        return "Average"
+    return "Good"
 
 
 def _compute_match_score(user_input: dict[str, Any], vlm_condition: str) -> tuple[int, list[str]]:
@@ -322,7 +338,6 @@ def _compute_match_score(user_input: dict[str, Any], vlm_condition: str) -> tupl
     # Condition distance penalties
     if pair == {"Good", "Average"}:
         score -= 10
-        reasons.append("Minor condition difference")
     elif pair == {"Average", "Bad"}:
         score -= 15
         reasons.append("Moderate condition difference")
@@ -455,43 +470,54 @@ async def ai_device_scan(
     }
 
     ai_offline = False
-    # Short connect timeout so a dead AI port fails fast (avoids browser/CDN timeouts on AWS).
-    _ai_http_timeout = httpx.Timeout(45.0, connect=3.0)
+    base = _ai_backend_base_url()
+    read_timeout = max(30.0, float(settings.ai_backend_read_timeout_seconds))
+    # Connect fails fast if nothing is listening; read timeout allows first BLIP-2 download/load + inference.
+    _ai_http_timeout = httpx.Timeout(read_timeout, connect=10.0)
     try:
         async with httpx.AsyncClient(timeout=_ai_http_timeout) as client:
-            detection_payloads: list[dict[str, Any]] = []
-            for name, content, ctype in image_payloads:
-                detect_response = await client.post(
-                    f"{AI_BACKEND_URL}/detect?conf_threshold=0.25",
-                    files={"file": (name, content, ctype)},
-                )
-                detect_response.raise_for_status()
-                detection_payloads.append(detect_response.json())
-
-            if len(detection_payloads) == 1:
-                detected = _extract_detected_summary(detection_payloads[0])
-            else:
-                batch_like = {"results": [{"detected_objects": d.get("detections", [])} for d in detection_payloads]}
-                detected = _extract_detected_summary_from_batch(batch_like)
-
             if len(image_payloads) == 1:
                 filename, content, content_type = image_payloads[0]
                 final_response = await client.post(
-                    f"{AI_BACKEND_URL}/analyze?conf_threshold=0.25",
+                    f"{base}/analyze?conf_threshold=0.25",
                     files={"file": (filename, content, content_type)},
                 )
             else:
                 files = [("files", (name, content, ctype)) for name, content, ctype in image_payloads]
                 final_response = await client.post(
-                    f"{AI_BACKEND_URL}/analyze-batch?conf_threshold=0.25",
+                    f"{base}/analyze-batch?conf_threshold=0.25",
                     files=files,
                 )
             final_response.raise_for_status()
             final_analysis = final_response.json()
+            if _is_timeout_fallback(final_analysis):
+                return {
+                    "success": False,
+                    "error": "AI model timed out before full YOLO+VLM analysis completed. Please retry the scan.",
+                    "detected": {
+                        "detected_device": "unknown",
+                        "detected_device_type": "unknown",
+                        "detected_condition": "unknown",
+                        "detected_objects": [],
+                        "confidence": 0.0,
+                        "confidence_label": "low",
+                        "vlm_condition": "Average",
+                        "vlm_damage": "Not Broken",
+                        "damage_confidence": 0.0,
+                    },
+                    "user_input": user_input,
+                    "match_score": 0,
+                    "reasons": [
+                        "Full AI pipeline timed out; result was not trusted.",
+                        "Please retry with 1-2 clear images while AI backend is warm.",
+                    ],
+                    "final_analysis": final_analysis,
+                }
+            detected = _extract_detected_summary_from_analysis(final_analysis)
     except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
         logger.warning(
             "AI backend at %s unreachable or returned an error (%s); using offline fallback for ai-device-scan",
-            AI_BACKEND_URL,
+            base,
             exc,
         )
         ai_offline = True
@@ -501,6 +527,33 @@ async def ai_device_scan(
     vlm_summary = _extract_vlm_summary(final_analysis)
     detected["vlm_condition"] = vlm_summary["vlm_condition"]
     detected["vlm_damage"] = vlm_summary["vlm_damage"]
+    detected["damage_confidence"] = float(vlm_summary.get("damage_confidence", detected.get("confidence", 0.5)))
+    detected["condition"] = _classify_condition(
+        detected["vlm_condition"],
+        detected["vlm_damage"],
+        detected["damage_confidence"],
+    )
+    detected["detected_condition"] = _normalize_text(detected["condition"])
+
+    yolo_device = _normalize_device(detected.get("detected_device_type", "unknown"))
+    manual_device = _normalize_device(user_input["device_type"])
+    is_match = yolo_device == manual_device
+    detected["match_status"] = "Match" if is_match else "Not Match"
+
+    if not is_match:
+        return {
+            "success": False,
+            "error": "AI scan and Manual input do not match",
+            "detected": detected,
+            "user_input": user_input,
+            "match_score": 0,
+            "reasons": [
+                f"YOLO detected: {yolo_device}",
+                f"Manual input: {manual_device}",
+            ],
+            "final_analysis": final_analysis,
+        }
+
     scoring_input = {
         **user_input,
         "vlm_damage": vlm_summary["vlm_damage"],
@@ -514,23 +567,11 @@ async def ai_device_scan(
             "AI inference backend offline — scan used your selected device type and average condition defaults.",
             *reasons,
         ]
-    # Offline mode cannot infer damage from images; skip strict damage/device checks so AWS works without port 5000.
-    validation_error = None if ai_offline else _validate_user_vs_ai(user_input, detected)
-    if validation_error:
-        if not detected.get("detected_objects"):
-            logger.warning("No YOLO detections; returning heuristic device output.")
-        return {
-            "success": False,
-            "error": validation_error,
-            "detected": detected,
-            "user_input": user_input,
-            "match_score": match_score,
-            "reasons": reasons,
-        }
 
     return {
         "success": True,
         "detected": detected,
+        "match_status": "Match",
         "user_input": user_input,
         "match_score": match_score,
         "reasons": reasons,

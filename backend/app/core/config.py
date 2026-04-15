@@ -18,6 +18,10 @@ class Settings(BaseSettings):
         ),
         alias="CORS_ORIGINS",
     )
+    # YOLO + VLM inference API (backend/app.py on port 5000 by default).
+    ai_backend_url: str = Field(default="http://127.0.0.1:5000", alias="AI_BACKEND_URL")
+    # First BLIP-2 load + analyze can exceed 60s; keep dashboard client from timing out early.
+    ai_backend_read_timeout_seconds: float = Field(default=300.0, alias="AI_BACKEND_READ_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

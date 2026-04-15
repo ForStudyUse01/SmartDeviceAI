@@ -15,8 +15,10 @@ export default async function handler(req, res) {
         yolo_label: 'mobile',
         yolo_confidence: 0.61,
         condition: 'partially working',
-        details: 'Fallback cloud inference mode is active.',
-        suggestion: 'Upload clearer front and back photos for higher-confidence AI verification.',
+        details:
+          'This response is a STATIC Vercel demo stub (not your local BLIP-2). Configure your real API URL or run the app locally.',
+        suggestion:
+          'For real scans: run the FastAPI dashboard + app.py AI server locally, or set DASHBOARD_API_URL on Vercel to your hosted API.',
       },
     ],
     vlm_condition: 'Average',
@@ -28,7 +30,9 @@ export default async function handler(req, res) {
     detected,
     user_input: {},
     match_score: 78,
-    reasons: ['Running in cloud fallback inference mode'],
+    reasons: [
+      'STATIC_VERCEL_STUB: this route does not call your GPU VLM. Use local dev (VITE_API_URL=http://127.0.0.1:8000) or proxy this handler to your FastAPI /ai-device-scan.',
+    ],
     final_analysis: {
       status: 'success',
       image_name: 'uploaded-image',

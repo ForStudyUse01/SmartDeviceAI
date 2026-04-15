@@ -32,6 +32,7 @@ class DetectedObject:
     box: tuple[int, int, int, int]
     vlm_condition: str = "Average"
     vlm_damage: str = "Not Broken"
+    damage_confidence: float = 0.5
 
 
 @dataclass
@@ -119,13 +120,56 @@ class E_WasteDetectionPipeline:
             return "ignore", 0.0
 
         indicators = getattr(analysis, "damage_indicators", [])
-        if analysis.condition == "damaged" and len(indicators) < 2:
-            return "working", max(analysis.confidence, 0.6)
-
+        if analysis.damage == "Broken":
+            return "damaged", max(analysis.damage_confidence, analysis.confidence, 0.7)
+        if analysis.condition == "damaged":
+            return "damaged", max(analysis.confidence, 0.62)
         if len(indicators) >= 2:
-            return "damaged", max(analysis.confidence, 0.75)
+            return "damaged", max(analysis.confidence, 0.7)
 
         return "working", max(analysis.confidence, 0.6)
+
+    def _merge_with_full_image_damage(self, local_analysis, full_image_analysis):
+        """Apply whole-image damage cues to per-box analysis for crack misses."""
+        if full_image_analysis.damage != "Broken":
+            return local_analysis
+        if local_analysis.damage == "Broken":
+            return local_analysis
+        if full_image_analysis.damage_confidence < 0.6:
+            return local_analysis
+
+        merged_indicators = list(local_analysis.damage_indicators)
+        for indicator in full_image_analysis.damage_indicators:
+            if indicator not in merged_indicators:
+                merged_indicators.append(indicator)
+
+        local_analysis.damage = "Broken"
+        local_analysis.damage_confidence = max(local_analysis.damage_confidence, full_image_analysis.damage_confidence)
+        local_analysis.condition = "damaged"
+        local_analysis.condition_label = "Bad"
+        local_analysis.damage_indicators = merged_indicators
+        local_analysis.suggestion = (
+            f"{local_analysis.suggestion} Whole-image pass detected strong damage cues."
+        ).strip()
+        return local_analysis
+
+    def _finalize_damage_state(self, analysis, filtered_condition: str):
+        """
+        Keep damage label/confidence aligned with strong damage signals.
+        """
+        strong_damage = (
+            filtered_condition == "damaged"
+            or analysis.condition == "damaged"
+            or analysis.condition_label == "Bad"
+            or analysis.damage == "Broken"
+            or len(getattr(analysis, "damage_indicators", [])) >= 2
+        )
+        if strong_damage:
+            analysis.damage = "Broken"
+            analysis.condition = "damaged"
+            analysis.condition_label = "Bad"
+            analysis.damage_confidence = max(float(getattr(analysis, "damage_confidence", 0.0)), 0.72)
+        return analysis
 
     def process_single_image(
         self,
@@ -135,6 +179,7 @@ class E_WasteDetectionPipeline:
     ) -> PipelineResult:
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            full_image_analysis = self.vlm_analyzer.analyze_crop(image_bytes, "image/jpeg")
             boxes = self.yolo_detector.detect_objects(image_bytes, conf_threshold=conf_threshold)
 
             if not boxes:
@@ -163,10 +208,12 @@ class E_WasteDetectionPipeline:
                     crop_bytes = crop_io.getvalue()
 
                     analysis = self.vlm_analyzer.analyze_crop(crop_bytes, "image/jpeg")
+                    analysis = self._merge_with_full_image_damage(analysis, full_image_analysis)
                     filtered_condition, filtered_confidence = self._filter_condition(
                         analysis,
                         box.confidence,
                     )
+                    analysis = self._finalize_damage_state(analysis, filtered_condition)
 
                     if filtered_condition == "ignore":
                         continue
@@ -189,6 +236,7 @@ class E_WasteDetectionPipeline:
                             condition=combined_condition,
                             vlm_condition=analysis.condition_label,
                             vlm_damage=analysis.damage,
+                            damage_confidence=round(float(analysis.damage_confidence), 4),
                             details=rec_result.details,
                             suggestion=rec_result.recommendation,
                             eco_score=analysis.eco_score,

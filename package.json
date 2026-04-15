@@ -2,6 +2,8 @@
   "name": "smartdeviceai",
   "private": true,
   "scripts": {
-    "start:dashboard": "powershell -ExecutionPolicy Bypass -NoProfile -File ./scripts/start-dashboard.ps1"
+    "start:dashboard": "powershell -ExecutionPolicy Bypass -NoProfile -File ./scripts/start-dashboard.ps1",
+    "start:ai": "powershell -ExecutionPolicy Bypass -NoProfile -File ./scripts/start-ai-api.ps1",
+    "start:full": "powershell -ExecutionPolicy Bypass -NoProfile -File ./scripts/start-full-stack.ps1"
   }
 }

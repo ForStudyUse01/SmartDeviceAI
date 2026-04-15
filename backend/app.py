@@ -1,12 +1,24 @@
 """
 E-waste Detection API (FastAPI)
+
+Run this file directly (not as a package):  python app.py
+Reason: this repo also contains a Python package named `app/` for the dashboard API.
 """
 
 import asyncio
 import logging
 import os
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +36,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "20"))
+# First-time BLIP-2 inference can be slow; allow a larger window unless overridden.
+ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "300"))
 # Default to full pipeline for better quality; set FAST_AI_MODE=1 only when low-latency fallback is needed.
 FAST_AI_MODE = os.getenv("FAST_AI_MODE", "0").lower() in {"1", "true", "yes", "on"}
 CORS_ORIGINS_RAW = os.getenv(
@@ -37,11 +50,30 @@ def parse_cors_origins(origins_raw: str) -> list[str]:
     origins = [origin.strip() for origin in origins_raw.split(",") if origin.strip()]
     return origins or ["http://127.0.0.1:5173", "http://localhost:5173"]
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Warm YOLO+VLM in the background so the first browser scan is less likely to time out."""
+    preload = os.getenv("PRELOAD_AI_PIPELINE", "1").lower() in {"1", "true", "yes", "on"}
+    if preload:
+
+        async def _warm() -> None:
+            try:
+                await asyncio.to_thread(get_pipeline)
+                logger.info("AI pipeline preload finished.")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AI pipeline preload failed (will load on first request): %s", exc)
+
+        asyncio.create_task(_warm())
+    yield
+
+
 # FastAPI app
 app = FastAPI(
     title="E-waste Detection API",
     description="AI pipeline for detecting and analyzing e-waste objects",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS configuration
@@ -55,16 +87,27 @@ app.add_middleware(
 app.include_router(ai_inference_router)
 
 pipeline: E_WasteDetectionPipeline | None = None
+_pipeline_lock = threading.Lock()
 
 
 def get_pipeline() -> E_WasteDetectionPipeline:
     """Lazily initialize the heavy YOLO + VLM pipeline on first use."""
     global pipeline
-    if pipeline is None:
-        pipeline = E_WasteDetectionPipeline(
-            yolo_model_path="yolov8n.pt",
-            vlm_model_name="Salesforce/blip2-opt-2.7b"
-        )
+    if pipeline is not None:
+        return pipeline
+    with _pipeline_lock:
+        if pipeline is None:
+            yolo_path = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt").strip() or "yolov8n.pt"
+            vlm_path = os.getenv("VLM_FINETUNED_PATH", "").strip()
+            vlm_name = (
+                vlm_path
+                or os.getenv("VLM_MODEL", "Salesforce/blip2-opt-2.7b").strip()
+                or "Salesforce/blip2-opt-2.7b"
+            )
+            pipeline = E_WasteDetectionPipeline(
+                yolo_model_path=yolo_path,
+                vlm_model_name=vlm_name,
+            )
     return pipeline
 
 
@@ -100,6 +143,7 @@ def build_timeout_fallback(
         box=(0, 0, 1, 1),
         vlm_condition=quick_analysis.condition_label,
         vlm_damage=quick_analysis.damage,
+        damage_confidence=quick_analysis.damage_confidence,
     )
 
     return PipelineResult(
@@ -143,6 +187,7 @@ def build_fast_analysis(
                 box=(0, 0, 1, 1),
                 vlm_condition=quick_analysis.condition_label,
                 vlm_damage=quick_analysis.damage,
+                damage_confidence=quick_analysis.damage_confidence,
             )
         ],
         error_message="Fast AI mode used for responsive analysis.",
@@ -161,6 +206,7 @@ class ObjectDetectionResponse(BaseModel):
     condition: str = Field(..., description="Object condition")
     vlm_condition: str = Field("Average", description="Structured VLM condition: Good/Average/Poor")
     vlm_damage: str = Field("Not Broken", description="Structured VLM damage: Broken/Not Broken")
+    damage_confidence: float = Field(0.5, description="Damage confidence (0-1)")
     details: str = Field(..., description="Details about conditions")
     suggestion: str = Field(..., description="Recycling/repair suggestion")
     eco_score: int = Field(..., description="Recyclability score (0-100)")

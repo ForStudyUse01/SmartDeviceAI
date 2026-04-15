@@ -41,6 +41,9 @@ export function ScanResultCard({ scan, liveMetalPrices }) {
               <li>
                 <span className="result-key">AI confidence</span> {validation.aiConfidence}%
               </li>
+              <li>
+                <span className="result-key">Damage confidence</span> {validation.aiDamageConfidence ?? 0}%
+              </li>
             </ul>
             <p className="metric-hint" style={{ marginTop: 12 }}>
               {validation.aiSuggestion ||
@@ -119,6 +122,9 @@ export function ScanResultCard({ scan, liveMetalPrices }) {
               </li>
               <li>
                 <span className="result-key">AI confidence</span> {validation.aiConfidence}%
+              </li>
+              <li>
+                <span className="result-key">Damage confidence</span> {validation.aiDamageConfidence ?? 0}%
               </li>
             </ul>
             {validation.aiSuggestion ? (

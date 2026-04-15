@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -19,26 +20,9 @@ import torch
 from PIL import Image, ImageStat
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
+from vlm_prompts import E_WASTE_PROMPT
+
 logger = logging.getLogger(__name__)
-
-# Strict prompt for structured condition + damage outputs.
-E_WASTE_PROMPT = """Analyze the uploaded device image.
-Classify:
-1. Overall condition: Good, Average, or Bad
-2. Is the device broken? Answer: Broken or Not Broken
-
-Rules:
-- Good = no visible damage, clean
-- Average = minor scratches or wear
-- Bad = heavy damage, cracks, missing parts
-- Broken = visible cracks, shattered screen, major defects
-
-Return ONLY JSON:
-{
-  "condition": "...",
-  "damage": "..."
-}
-"""
 
 
 @dataclass
@@ -48,6 +32,7 @@ class VLMResult:
     condition: str
     condition_label: str
     damage: str
+    damage_confidence: float
     confidence: float
     suggestion: str
     eco_score: int
@@ -90,8 +75,8 @@ class VLMAnalyzer:
                 low_cpu_mem_usage=True,
             )
             self.model.to(self.device)
-            if self.device == "cpu":
-                self.model.half()  # Use float16 for smaller memory footprint
+            if self.device == "cuda":
+                torch.backends.cudnn.benchmark = True
             logger.info("BLIP-2 model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load BLIP-2 model: {e}")
@@ -115,6 +100,9 @@ class VLMAnalyzer:
         try:
             # Load image
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            # Keep inference responsive for large uploads.
+            if max(image.size) > 1024:
+                image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
 
             # Prepare inputs
             inputs = self.processor(image, E_WASTE_PROMPT, return_tensors="pt")
@@ -124,21 +112,77 @@ class VLMAnalyzer:
             with torch.no_grad():
                 output_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=100,
+                    max_new_tokens=64,
                     num_beams=1,
-                    temperature=0.7,
+                    do_sample=False,
                 )
 
-            response_text = self.processor.decode(
-                output_ids[0], skip_special_tokens=True
-            ).strip()
+            # Decode only newly generated tokens. Full-sequence decode includes the prompt and
+            # breaks JSON parsing, which then triggered a fallback on empty bytes (identical output every time).
+            input_len = int(inputs["input_ids"].shape[-1])
+            gen_ids = output_ids[0, input_len:] if output_ids.shape[-1] > input_len else output_ids[0]
+            response_text = self.processor.decode(gen_ids, skip_special_tokens=True).strip()
+            if not response_text:
+                response_text = self.processor.decode(output_ids[0], skip_special_tokens=True).strip()
 
-            # Parse JSON response
-            return self._parse_response(response_text)
+            # Parse JSON response and apply safety override for visible crack cues.
+            parsed = self._parse_response(response_text, image_bytes)
+            return self._apply_damage_safety(parsed, image_bytes)
 
         except Exception as e:
             logger.warning(f"VLM analysis failed: {e}. Using fallback.")
             return self._fallback_analysis(image_bytes)
+
+    def _apply_damage_safety(self, result: VLMResult, image_bytes: bytes) -> VLMResult:
+        """
+        Safety rule:
+        If crack-like cues are strong, force Broken unless model confidence is very high.
+        """
+        score, visual_indicators = self._estimate_damage_signal(image_bytes)
+        has_crack_keyword = any("crack" in indicator for indicator in result.damage_indicators)
+        # Lower threshold to better catch obvious shattered-screen patterns from real uploads.
+        strong_visual_damage = score >= 0.13
+        very_confident_not_broken = result.damage == "Not Broken" and result.damage_confidence >= 0.92
+
+        if result.damage == "Not Broken" and (has_crack_keyword or strong_visual_damage) and not very_confident_not_broken:
+            merged_indicators = list(result.damage_indicators)
+            for item in visual_indicators:
+                if item not in merged_indicators:
+                    merged_indicators.append(item)
+            return VLMResult(
+                object_name=result.object_name,
+                condition="damaged",
+                condition_label="Bad",
+                damage="Broken",
+                damage_confidence=max(result.damage_confidence, min(0.9, 0.55 + score)),
+                confidence=max(result.confidence, min(0.85, 0.5 + score)),
+                suggestion=(
+                    f"{result.suggestion} Safety override: strong crack/damage cues were visible in the image."
+                ).strip(),
+                eco_score=max(30, min(result.eco_score, 55)),
+                damage_indicators=merged_indicators,
+            )
+        return result
+
+    def _estimate_damage_signal(self, image_bytes: bytes) -> tuple[float, list[str]]:
+        """Estimate crack/damage strength from gradients and luminance extremes."""
+        image = Image.open(io.BytesIO(image_bytes)).convert("L")
+        arr = np.asarray(image, dtype=np.uint8)
+        gx = np.diff(arr.astype(np.float32), axis=1, prepend=arr[:, :1])
+        gy = np.diff(arr.astype(np.float32), axis=0, prepend=arr[:1, :])
+        grad = np.sqrt(gx * gx + gy * gy)
+
+        strong_edge_ratio = float((grad > 45).mean())
+        dark_ratio = float((arr < 40).mean())
+        bright_ratio = float((arr > 220).mean())
+        score = (strong_edge_ratio * 0.55) + (dark_ratio * 0.30) + (bright_ratio * 0.15)
+
+        indicators: list[str] = []
+        if strong_edge_ratio > 0.09:
+            indicators.append("cracks")
+        if dark_ratio > 0.20:
+            indicators.append("broken parts")
+        return score, indicators
 
     def analyze_batch(self, image_list: list[bytes]) -> list[VLMResult]:
         """
@@ -160,8 +204,8 @@ class VLMAnalyzer:
                 results.append(self._fallback_analysis(image_bytes))
         return results
 
-    def _parse_response(self, response_text: str) -> VLMResult:
-        """Parse VLM response to structured format"""
+    def _parse_response(self, response_text: str, image_bytes: bytes) -> VLMResult:
+        """Parse VLM response to structured format."""
         # Try to extract JSON from response
         response_text = response_text.strip()
 
@@ -173,18 +217,30 @@ class VLMAnalyzer:
         if response_text.endswith("```"):
             response_text = response_text[:-3]
         response_text = response_text.strip()
+        json_match = re.search(r"\{[\s\S]*\}", response_text)
+        if json_match:
+            response_text = json_match.group(0).strip()
 
         try:
             data = json.loads(response_text)
             condition_label = self._normalize_condition_label(str(data.get("condition", "Average")))
             damage = self._normalize_damage(str(data.get("damage", "Not Broken")))
+            parsed_confidence = max(0.0, min(1.0, float(data.get("confidence", 0.65))))
+            parsed_damage_confidence = max(
+                0.0,
+                min(1.0, float(data.get("damage_confidence", data.get("confidence", 0.65)))),
+            )
+            # Guard against model JSON returning 0.0 for damage confidence.
+            if parsed_damage_confidence <= 0.0:
+                parsed_damage_confidence = max(0.45, parsed_confidence)
             working_condition = "damaged" if condition_label == "Bad" or damage == "Broken" else "working"
             return VLMResult(
                 object_name=str(data.get("object", "electronic component")).strip(),
                 condition=working_condition,
                 condition_label=condition_label,
                 damage=damage,
-                confidence=max(0.0, min(1.0, float(data.get("confidence", 0.65)))),
+                damage_confidence=parsed_damage_confidence,
+                confidence=parsed_confidence,
                 suggestion=str(data.get("suggestion", f"Condition {condition_label}; damage {damage}.")).strip(),
                 eco_score=max(0, min(100, int(data.get("eco_score", 60)))),
                 damage_indicators=self._extract_damage_indicators(
@@ -194,8 +250,12 @@ class VLMAnalyzer:
                 ),
             )
         except (json.JSONDecodeError, ValueError, KeyError) as e:
-            logger.warning(f"Failed to parse VLM response: {e}. Using fallback.")
-            return self._fallback_analysis(b"")
+            logger.warning(
+                "Failed to parse VLM response: %s. Raw (truncated): %r. Using image-based fallback.",
+                e,
+                (response_text[:240] + "...") if len(response_text) > 240 else response_text,
+            )
+            return self._fallback_analysis(image_bytes)
 
     def _normalize_condition_label(self, condition: str) -> str:
         """Normalize condition to Good/Average/Bad for UI consistency."""
@@ -270,19 +330,20 @@ class VLMAnalyzer:
             bright_ratio = float((arr > 220).mean())
 
             damage_score = (strong_edge_ratio * 0.55) + (dark_ratio * 0.30) + (bright_ratio * 0.15)
-            is_broken = damage_score > 0.24 or (contrast > 62 and dark_ratio > 0.08)
+            # More sensitive threshold so clearly shattered screens are not marked as "Not Broken".
+            is_broken = damage_score > 0.13 or (contrast > 52 and dark_ratio > 0.07)
 
             if is_broken:
                 damage = "Broken"
                 condition_label = "Bad"
                 condition = "damaged"
-                confidence = max(0.58, min(0.82, 0.55 + damage_score))
+                confidence = max(0.68, min(0.9, 0.62 + damage_score))
                 suggestion = (
                     "Fallback VLM detected heavy visual damage cues (crack/edge density contrast). "
                     "Treat as Broken until heavy model confirmation."
                 )
                 indicators = ["cracks"] if strong_edge_ratio > 0.22 else ["broken parts"]
-                eco_score = 45
+                eco_score = 40
             else:
                 damage = "Not Broken"
                 if brightness > 145 and contrast < 48:
@@ -301,6 +362,7 @@ class VLMAnalyzer:
                 condition=condition,
                 condition_label=condition_label,
                 damage=damage,
+                damage_confidence=max(0.0, min(1.0, confidence)),
                 confidence=confidence,
                 suggestion=suggestion,
                 eco_score=eco_score,
@@ -312,6 +374,7 @@ class VLMAnalyzer:
                 condition="damaged",
                 condition_label="Bad",
                 damage="Broken",
+                damage_confidence=0.6,
                 confidence=0.45,
                 suggestion="Fallback VLM failed to parse image; marking as potentially Broken for safety.",
                 eco_score=50,

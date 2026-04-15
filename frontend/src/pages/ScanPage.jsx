@@ -37,6 +37,20 @@ function confidenceTone(value, explicitLabel = '') {
   return 'high'
 }
 
+function damageConfidenceLabel(value) {
+  const percent = confidenceToPercent(value)
+  if (percent < 55) return 'Low damage certainty'
+  if (percent < 75) return 'Medium damage certainty'
+  return 'High damage certainty'
+}
+
+function displayDamageLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'broken' || normalized === 'damaged') return 'Damaged'
+  if (normalized === 'not broken') return 'Not Damaged'
+  return value || 'Not Damaged'
+}
+
 function toMlCondition(condition) {
   const normalized = String(condition || '')
     .trim()
@@ -65,6 +79,8 @@ function buildValidationResult({
       aiSuggestion: aiResult?.suggestion || '',
       aiConfidence: confidenceToPercent(aiResult?.confidence || 0),
       aiConfidenceLabel: confidenceLabel(aiResult?.confidence || 0),
+      aiDamageConfidence: confidenceToPercent(aiResult?.damage_confidence || 0),
+      aiDamageConfidenceLabel: damageConfidenceLabel(aiResult?.damage_confidence || 0),
       reasons,
       requiresImage: status === 'missing-image',
     },
@@ -73,6 +89,7 @@ function buildValidationResult({
           detected_device_type: aiResult?.detected_device || 'mobile',
           confidence: aiResult?.confidence ?? 0.4,
           confidence_label: aiResult?.confidence_label || 'low',
+          damage_confidence: aiResult?.damage_confidence ?? aiResult?.confidence ?? 0.4,
           detected_objects: aiResult?.detected_objects || [],
         }
       : null,
@@ -295,12 +312,19 @@ export function ScanPage() {
         message: 'AI verification passed. The image and manual input are aligned well enough to show the estimate.',
         matchScore: Number(response.match_score ?? 100),
         aiDetectedDevice: response.detected?.detected_device_type || 'unknown',
-        aiCondition: response.detected?.vlm_condition || mapDetectedCondition(response.detected?.detected_condition || ''),
+        aiCondition:
+          response.detected?.condition ||
+          response.detected?.vlm_condition ||
+          mapDetectedCondition(response.detected?.detected_condition || ''),
         aiSuggestion: primaryDetection?.suggestion || '',
         aiConfidence: confidenceToPercent(response.detected?.confidence || 0),
         aiConfidenceLabel: response.detected?.confidence_label
           ? `${String(response.detected.confidence_label).charAt(0).toUpperCase()}${String(response.detected.confidence_label).slice(1)} confidence`
           : confidenceLabel(response.detected?.confidence || 0),
+        aiDamageConfidence: confidenceToPercent(response.detected?.damage_confidence ?? response.detected?.confidence ?? 0),
+        aiDamageConfidenceLabel: damageConfidenceLabel(
+          response.detected?.damage_confidence ?? response.detected?.confidence ?? 0,
+        ),
         reasons: Array.isArray(response.reasons) ? response.reasons : [],
       }
       computed.aiDetected = response.detected
@@ -677,30 +701,34 @@ export function ScanPage() {
               <div className="scan-detected-line score">
                 Match score: <strong>{result.validation?.matchScore ?? 0}%</strong>
               </div>
-              {(result.validation?.reasons || []).slice(0, 2).map((reason) => (
+              {(result.validation?.reasons || [])
+                .filter((reason) => String(reason || '').trim().toLowerCase() !== 'major condition difference')
+                .slice(0, 2)
+                .map((reason) => (
                 <div key={reason} className="result-warning-line">
                   {'\u26A0'} {reason}
                 </div>
               ))}
               <div className="scan-detected-line">
                 VLM condition: <strong>{result.aiDetected.vlm_condition || 'Average'}</strong> | Damage:{' '}
-                <strong>{result.aiDetected.vlm_damage || 'Not Broken'}</strong>
+                <strong>{displayDamageLabel(result.aiDetected.vlm_damage)}</strong>
+              </div>
+              <div className="scan-detected-line">
+                Damage confidence:{' '}
+                <strong>{confidenceToPercent(result.aiDetected.damage_confidence ?? result.aiDetected.confidence)}%</strong>{' '}
+                ({damageConfidenceLabel(result.aiDetected.damage_confidence ?? result.aiDetected.confidence)})
               </div>
               {String(result.aiDetected.confidence_label || '').toLowerCase() === 'low' ? (
                 <div className="error-banner scan-detected-warning">
                   Low confidence detection - result may vary
                 </div>
               ) : null}
-              {result.aiDetected.detected_objects?.length ? (
-                <ul className="scan-detected-list">
-                  {result.aiDetected.detected_objects.map((obj, index) => (
-                    <li key={`${obj.yolo_label || obj.label || 'unknown'}-${index}`}>
-                      {obj.yolo_label || obj.label || 'unknown'} ({confidenceToPercent(obj.yolo_confidence ?? obj.confidence)}
-                      %)
-                    </li>
-                  ))}
-                </ul>
-              ) : (
+              {confidenceToPercent(result.aiDetected.damage_confidence ?? result.aiDetected.confidence) < 60 ? (
+                <div className="error-banner scan-detected-warning">
+                  Damage certainty is low - upload a close-up crack image for stronger verification.
+                </div>
+              ) : null}
+              {result.aiDetected.detected_objects?.length ? null : (
                 <div className="scan-detected-empty">No supported device boxes detected.</div>
               )}
             </div>
@@ -711,7 +739,6 @@ export function ScanPage() {
               <ModelComparison predictions={predictions} bestModel={bestModel} />
             </div>
           ) : null}
-          <pre style={{ color: 'white' }}>{JSON.stringify(predictions, null, 2)}</pre>
         </div>
       </section>
     </div>

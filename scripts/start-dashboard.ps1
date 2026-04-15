@@ -45,6 +45,13 @@ function Set-FrontendApiUrl([int]$port) {
         if ($text.Trim().Length -gt 0) { $text = $text.TrimEnd() + "`n" + $line + "`n" }
         else { $text = $line + "`n" }
     }
+    $aiLine = "VITE_AI_ANALYZE_URL=http://127.0.0.1:5000"
+    if ($text -match "(?m)^VITE_AI_ANALYZE_URL=") {
+        # Keep an existing AI URL (user may point at a remote inference host).
+    } else {
+        $text = $text.TrimEnd() + "`n" + $aiLine + "`n"
+        Write-Log "Added frontend/.env -> $aiLine (start scripts/start-ai-api.ps1 for local VLM)"
+    }
     Set-Content -Path $frontendEnv -Value $text -Encoding UTF8
     Write-Log "Updated frontend/.env -> $line"
 }
@@ -120,7 +127,7 @@ if ($port -ne 8000) {
 Set-FrontendApiUrl -port $port
 
 Write-Log "Starting: $py -m uvicorn app.main:app --host 0.0.0.0 --port $port --reload"
-$inner = "Set-Location '$backendDir'; & '$py' -m uvicorn app.main:app --host 0.0.0.0 --port $port --reload"
+$inner = "Set-Location '$($backendDir)'; & '$($py)' -m uvicorn app.main:app --host 0.0.0.0 --port $port --reload"
 Start-Process powershell -ArgumentList @("-NoExit", "-Command", $inner) | Out-Null
 Write-Log "Uvicorn launched in a new window. Waiting for /health ..."
 
@@ -137,9 +144,9 @@ if (-not (Test-Docs -port $port)) {
 }
 
 if (-not (Test-OpenApiHasScan -port $port)) {
-    Write-Log "ERROR: OpenAPI does not list ai-device-scan — route registration issue."
+    Write-Log "ERROR: OpenAPI does not list ai-device-scan - route registration issue."
     exit 1
 }
-Write-Log "OpenAPI lists POST /ai-device-scan — route OK."
+Write-Log "OpenAPI lists POST /ai-device-scan - route OK."
 
 Write-Log "Backend connected successfully on port $port (restart npm run dev if Vite was already running to pick up .env)."

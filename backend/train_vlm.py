@@ -3,7 +3,15 @@
 Fine-tune BLIP-2 for e-waste condition + damage classification text outputs.
 
 Expected JSONL format (one sample per line):
-{"image": "relative/or/absolute/path.jpg", "condition": "Good", "damage": "Not Broken"}
+{"image": "relative/or/absolute/path.jpg", "condition": "Good", "damage": "Not Broken", "device_type": "mobile"}
+
+Training uses the same prompt + JSON label shape as runtime inference (`vlm_model.VLMAnalyzer`).
+
+Optional quality gate (multi-pass decode must match labels):
+  python bootstrap_vlm_golden.py
+  python train_vlm.py --train-jsonl data/vlm_train.jsonl --val-jsonl data/vlm_val.jsonl --image-root .. ^
+    --gate-jsonl data/vlm_golden.jsonl --gate-repeats 4 --gate-max-samples 12 --epochs 8 ^
+    --require-final-gate-pass
 """
 
 from __future__ import annotations
@@ -21,13 +29,12 @@ from transformers import (
     Blip2ForConditionalGeneration,
     Blip2Processor,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 
-PROMPT = (
-    "Analyze this device image and return JSON with keys condition and damage. "
-    "condition must be Good, Average, or Bad. damage must be Broken or Not Broken."
-)
+from vlm_gate_eval import run_vlm_label_gate
+from vlm_prompts import E_WASTE_PROMPT, training_target_json
 
 
 def _norm_condition(value: str) -> str:
@@ -73,14 +80,14 @@ class VlmJsonlDataset(Dataset):
         image = Image.open(image_path).convert("RGB")
         condition = _norm_condition(row.get("condition", "Average"))
         damage = _norm_damage(row.get("damage", "Not Broken"))
-        target_text = json.dumps({"condition": condition, "damage": damage})
-        return {"image": image, "prompt": PROMPT, "target_text": target_text}
+        target_text = training_target_json(row, condition=condition, damage=damage)
+        return {"image": image, "prompt": E_WASTE_PROMPT, "target_text": target_text}
 
 
 @dataclass
 class VlmCollator:
     processor: Blip2Processor
-    max_target_len: int = 48
+    max_target_len: int = 128
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         images = [f["image"] for f in features]
@@ -101,6 +108,45 @@ class VlmCollator:
         return model_inputs
 
 
+class GoldenGateCallback(TrainerCallback):
+    """After each epoch, require multi-pass generation to match gate JSONL labels."""
+
+    def __init__(
+        self,
+        *,
+        processor: Blip2Processor,
+        jsonl_path: Path,
+        image_root: Path,
+        repeats: int,
+        max_samples: int,
+        device: str,
+    ) -> None:
+        self.processor = processor
+        self.jsonl_path = jsonl_path
+        self.image_root = image_root
+        self.repeats = repeats
+        self.max_samples = max_samples
+        self.device = device
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        if model is None:
+            return control
+        ok, msg = run_vlm_label_gate(
+            model,
+            self.processor,
+            device=self.device,
+            jsonl_path=self.jsonl_path,
+            image_root=self.image_root,
+            repeats=self.repeats,
+            max_samples=self.max_samples,
+        )
+        print(f"[vlm-gate] end of epoch {state.epoch:.0f}: {msg}")
+        if ok:
+            control.should_training_stop = True
+        return control
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fine-tune BLIP-2 for device condition/damage outputs.")
     parser.add_argument("--train-jsonl", required=True, help="Path to train jsonl")
@@ -112,6 +158,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max-samples", type=int, default=0, help="Use first N samples for smoke run")
+    parser.add_argument(
+        "--gate-jsonl",
+        default="",
+        help="Optional JSONL (same schema as train) used to stop early when generation matches labels.",
+    )
+    parser.add_argument(
+        "--gate-image-root",
+        default="",
+        help="Root for resolving relative image paths in gate JSONL (defaults to --image-root).",
+    )
+    parser.add_argument("--gate-repeats", type=int, default=4, help="Consecutive identical passes required per image.")
+    parser.add_argument("--gate-max-samples", type=int, default=12, help="Max gate JSONL rows to evaluate each epoch.")
+    parser.add_argument(
+        "--require-final-gate-pass",
+        action="store_true",
+        help="Exit with code 2 if the gate still fails after the last training epoch.",
+    )
     return parser.parse_args()
 
 
@@ -145,6 +208,14 @@ def main() -> None:
         for p in model.language_model.parameters():
             p.requires_grad = False
 
+    # Ensure at least the Q-Former / projection stack can adapt (safe with frozen ViT + LM).
+    if hasattr(model, "qformer"):
+        for p in model.qformer.parameters():
+            p.requires_grad = True
+    if hasattr(model, "language_projection"):
+        for p in model.language_projection.parameters():
+            p.requires_grad = True
+
     train_ds = VlmJsonlDataset(train_jsonl, image_root)
     val_ds = VlmJsonlDataset(val_jsonl, image_root) if val_jsonl else None
 
@@ -176,18 +247,57 @@ def main() -> None:
         remove_unused_columns=False,
     )
 
+    gate_jsonl: Path | None = None
+    if args.gate_jsonl and str(args.gate_jsonl).strip():
+        gate_jsonl = Path(args.gate_jsonl).expanduser().resolve()
+        if not gate_jsonl.is_file():
+            raise RuntimeError(f"Gate JSONL not found: {gate_jsonl}")
+
+    gate_image_root = (
+        Path(args.gate_image_root).expanduser().resolve()
+        if args.gate_image_root and str(args.gate_image_root).strip()
+        else image_root
+    )
+    callbacks: list[TrainerCallback] = []
+    if gate_jsonl is not None:
+        callbacks.append(
+            GoldenGateCallback(
+                processor=processor,
+                jsonl_path=gate_jsonl,
+                image_root=gate_image_root,
+                repeats=int(args.gate_repeats),
+                max_samples=int(args.gate_max_samples),
+                device=device,
+            )
+        )
+
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=VlmCollator(processor=processor),
+        callbacks=callbacks,
     )
 
     trainer.train()
     trainer.save_model(str(output_dir))
     processor.save_pretrained(str(output_dir))
     print(f"Saved fine-tuned model to: {output_dir}")
+
+    if gate_jsonl is not None:
+        ok, msg = run_vlm_label_gate(
+            model,
+            processor,
+            device=device,
+            jsonl_path=gate_jsonl,
+            image_root=gate_image_root,
+            repeats=int(args.gate_repeats),
+            max_samples=int(args.gate_max_samples),
+        )
+        print(f"[vlm-gate] final: {msg}")
+        if args.require_final_gate_pass and not ok:
+            raise SystemExit(2)
 
 
 if __name__ == "__main__":
